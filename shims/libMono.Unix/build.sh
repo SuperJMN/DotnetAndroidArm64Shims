@@ -36,6 +36,35 @@ else
     git -C "$WORK_DIR/src" checkout FETCH_HEAD
 fi
 
+# Compatibility stub: upstream removed Mono_Posix_Syscall_stime when glibc
+# deprecated stime(2) in 2.31. The pack-shipped binary still exports it
+# (built from an older commit), and verify-symbols.sh enforces parity.
+# Provide a no-op stub that returns ENOSYS — matches glibc's own behaviour
+# and keeps dynamic load happy.
+STUB_FILE="$WORK_DIR/src/src/native/_compat_stime.cc"
+if [[ ! -f "$STUB_FILE" ]]; then
+    cat > "$STUB_FILE" <<'EOF'
+// Compatibility stub: upstream removed Mono_Posix_Syscall_stime when glibc
+// deprecated stime(2). The pack-shipped binary still exports it.
+#include <errno.h>
+extern "C" int Mono_Posix_Syscall_stime(long *t) {
+    (void)t;
+    errno = ENOSYS;
+    return -1;
+}
+EOF
+    # Hook into both shared and static targets via target_sources after the
+    # add_library() calls in upstream CMakeLists.
+    cat >> "$WORK_DIR/src/src/native/CMakeLists.txt" <<'EOF'
+
+# Compatibility stubs for symbols upstream removed but the pack still exports.
+target_sources(Mono.Unix PRIVATE _compat_stime.cc)
+if(TARGET Mono.Unix-static)
+    target_sources(Mono.Unix-static PRIVATE _compat_stime.cc)
+endif()
+EOF
+fi
+
 BUILD_DIR="$WORK_DIR/build"
 rm -rf "$BUILD_DIR"
 
