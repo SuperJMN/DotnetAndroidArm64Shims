@@ -1,0 +1,112 @@
+name: build-shims
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      pack_version:
+        description: "Microsoft.Android.Sdk.Linux pack version to shim"
+        default: "36.1.53"
+
+permissions:
+  contents: read
+
+env:
+  PACK_VERSION: ${{ github.event.inputs.pack_version || '36.1.53' }}
+
+jobs:
+  reference:
+    name: extract-upstream-reference
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: install deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl unzip binutils
+      - name: extract reference symbols + version
+        run: bash scripts/extract-reference-symbols.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm64-reference-${{ env.PACK_VERSION }}
+          path: out/arm64-reference/${{ env.PACK_VERSION }}/
+          retention-days: 14
+
+  build:
+    name: build-${{ matrix.shim }}
+    needs: reference
+    runs-on: ubuntu-22.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        shim: [libMono.Unix, libZipSharpNative, aapt2]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install apt deps
+        run: |
+          sudo apt-get update -y
+          xargs -a "shims/${{ matrix.shim }}/apt-deps.txt" sudo apt-get install -y
+      - name: download upstream reference
+        uses: actions/download-artifact@v4
+        with:
+          name: arm64-reference-${{ env.PACK_VERSION }}
+          path: out/arm64-reference/${{ env.PACK_VERSION }}/
+      - name: build
+        run: bash "shims/${{ matrix.shim }}/build.sh"
+      - name: verify (symbols)
+        if: matrix.shim != 'aapt2'
+        run: bash "shims/${{ matrix.shim }}/verify-symbols.sh"
+      - name: verify (aapt2 version)
+        if: matrix.shim == 'aapt2'
+        run: bash shims/aapt2/verify-version.sh
+      - name: verify (aapt2 daemon)
+        if: matrix.shim == 'aapt2'
+        run: bash shims/aapt2/verify-daemon.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shim-${{ matrix.shim }}-${{ env.PACK_VERSION }}
+          path: out/linux-arm64/
+          retention-days: 14
+
+  install-shims-smoketest:
+    name: install-shims smoketest
+    needs: build
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: install shellcheck
+        run: sudo apt-get update -y && sudo apt-get install -y shellcheck
+      - name: shellcheck
+        run: shellcheck scripts/install-shims.sh scripts/package-release.sh scripts/extract-reference-symbols.sh
+      - name: collect built shims
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shim-*-${{ env.PACK_VERSION }}
+          path: out/linux-arm64/
+          merge-multiple: true
+      - name: package release tarball
+        run: bash scripts/package-release.sh
+      - name: stand up fake pack tree
+        run: |
+          set -euo pipefail
+          fake="$RUNNER_TEMP/fake-dotnet"
+          mkdir -p "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/Linux"
+          # touch placeholder x86_64 binaries so backup logic exercises
+          : > "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/libMono.Unix.so"
+          : > "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/libZipSharpNative-3-3.so"
+          : > "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/Linux/aapt2"
+          # serve dist/ over a local HTTP server so install-shims.sh can fetch it
+          mkdir -p "$RUNNER_TEMP/release/${PACK_VERSION}"
+          cp dist/shims-linux-arm64-${PACK_VERSION}.tar.gz "$RUNNER_TEMP/release/${PACK_VERSION}/"
+          (cd "$RUNNER_TEMP/release" && python3 -m http.server 8765 >/tmp/serve.log 2>&1 &)
+          sleep 1
+          PACK_ROOT="$fake/packs/Microsoft.Android.Sdk.Linux" \
+            RELEASE_BASE="http://127.0.0.1:8765" \
+            bash scripts/install-shims.sh --version "${PACK_VERSION}"
+          # re-run: must be a no-op
+          PACK_ROOT="$fake/packs/Microsoft.Android.Sdk.Linux" \
+            RELEASE_BASE="http://127.0.0.1:8765" \
+            bash scripts/install-shims.sh --version "${PACK_VERSION}" | tee /tmp/second.log
+          grep -q "already shimmed" /tmp/second.log

@@ -10,40 +10,26 @@ Snapshot of where the work stands. Update as tasks complete.
 - [x] Inventoried which binaries in the pack are x86_64-only vs already aarch64 (see `README.md`).
 - [x] Filed upstream ask: [dotnet/android#11184](https://github.com/dotnet/android/issues/11184).
 
-## Phase 1 — Easy wins (TODO)
+## Phase 1 — Easy wins (in progress, awaiting CI run)
 
 Order matters: the two `.so` shims are dependencies of MSBuild tasks that run before aapt2.
 
-- [ ] **`libMono.Unix.so` for linux-arm64.** Source: [mono/Mono.Posix](https://github.com/mono/Mono.Posix). Standard autotools build. Verify ABI compatibility with the .so currently in `tools/libMono.Unix.so` of pack `36.1.53` (`nm -D` to compare exported symbols).
-- [ ] **`libZipSharpNative-3-3.so` for linux-arm64.** Source: [xamarin/LibZipSharp](https://github.com/xamarin/LibZipSharp). Pin to the same `libzip` version Microsoft uses (check the `.so` strings to extract upstream commit / version).
-- [ ] CI: GitHub Actions matrix entry building these on `ubuntu-22.04-arm` (free arm64 runners now available for public repos as of 2025).
+- [x] **`libMono.Unix.so` for linux-arm64.** Build script at `shims/libMono.Unix/build.sh`, symbol-parity verifier at `shims/libMono.Unix/verify-symbols.sh`. Pinned reference: 346 exported symbols extracted from upstream `Microsoft.Android.Sdk.Linux/36.1.53`.
+- [x] **`libZipSharpNative-3-3.so` for linux-arm64.** Build script at `shims/libZipSharpNative/build.sh` (vendored libzip 1.10.1 built statically, then native wrapper). Soname suffix `-3-3` pinned in `pack-versions/36.1.53.env`.
+- [x] CI: GitHub Actions matrix on `ubuntu-22.04-arm` at `.github/workflows/build-shims.yml`.
 
-## Phase 2 — aapt2 (TODO, the hard one)
+## Phase 2 — aapt2 (in progress, awaiting CI run)
 
-- [ ] Decide build path. Options:
-  - **A. Standalone CMake fork** maintained externally (e.g. [lzhiyong/android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools)). Pros: small, fast. Cons: lags AOSP; we'd inherit lag and risk version-mismatch errors against newer packs.
-  - **B. Build from AOSP** with `lunch sdk-eng && m aapt2`. Pros: matches whatever Android Studio ships. Cons: needs ~300 GB AOSP checkout, repo tooling, and Soong build system on arm64.
-  - **C. Extract Termux's build recipe** and adapt away from Termux paths. Termux ships aapt2 for arm64 in `termux-packages/packages/aapt2/`.
-- [ ] Establish a procedure to find the **exact upstream commit** Microsoft used for the `aapt2` in a given pack version (it embeds a version string — `aapt2 version` prints it).
-- [ ] Cross-check that the rebuilt aapt2 reports the same `Daemon Mode` protocol version as the upstream one (the .NET MSBuild task speaks to it via stdin/stdout).
-- [ ] Define error mode if version check fails (`XA0111`): clear message pointing back here.
+- [x] Build path **picked: A**, slightly redirected. Termux dropped their aapt2 recipe (Option C is dead). We use [lzhiyong/android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools) — a complete CMake build of AOSP `aapt2` with all deps vendored — invoked **without** the NDK toolchain file so it produces a vanilla glibc `aarch64` ELF on the host runner. See `docs/aapt2.md` for rationale and `shims/aapt2/build.sh` for the script.
+- [x] Upstream `aapt2 version` extraction wired into `pack-versions/<v>.env::AAPT2_VERSION_STRING` and into `scripts/extract-reference-symbols.sh`.
+- [x] `verify-version.sh` matches the daemon's `aapt2 version` against the pinned string byte-for-byte (CI fails on mismatch → blocks XA0111 in production).
+- [x] `verify-daemon.sh` spawns `aapt2 daemon` and confirms it speaks before exiting (catches library-load failures the version string misses).
 
-## Phase 3 — Distribution + integration (TODO)
+## Phase 3 — Distribution + integration (in progress)
 
-- [ ] GitHub release per upstream pack version. Naming: tag = upstream version, e.g. `36.1.53`. Asset layout:
-  ```
-  shims-linux-arm64-36.1.53.tar.gz
-    aapt2
-    libMono.Unix.so
-    libZipSharpNative-3-3.so
-    SHA256SUMS
-  ```
-- [ ] Bootstrap CLI (e.g. `install-shims.sh` or a small dotnet tool) that:
-  1. Detects current host (must be linux-arm64).
-  2. Lists installed `Microsoft.Android.Sdk.Linux` versions under `~/.dotnet/packs/`.
-  3. For each, downloads the matching shim release and overlays it (backing up originals to `tools/.x86_64-backup/`).
-  4. Idempotent and safe to re-run.
-- [ ] Integrate from [DotnetDeployer](https://github.com/SuperJMN/DotnetDeployer): when `RuntimeInformation.OSArchitecture == Arm64 && IsLinux`, before `dotnet publish` for an Android project, invoke the bootstrap.
+- [x] GitHub release tarball assembly: `scripts/package-release.sh` produces `dist/shims-linux-arm64-<v>.tar.gz` + `SHA256SUMS` + outer `.sha256`. Release workflow at `.github/workflows/release.yml` triggers on tag push (`X.Y.Z`).
+- [x] **Bootstrap script: `scripts/install-shims.sh`** (zero deps beyond `bash`/`curl`/`tar`/`sha256sum`). Auto-detects installed pack versions, downloads matching release, verifies `SHA256SUMS`, backs up originals to `tools/.x86_64-backup/` (and `tools/Linux/.x86_64-backup/` for `aapt2`), idempotent on re-run. CI smoke test in `build-shims.yml` exercises the full overlay against a fake pack tree.
+- [ ] Integrate from [DotnetDeployer](https://github.com/SuperJMN/DotnetDeployer): when `RuntimeInformation.OSArchitecture == Arm64 && IsLinux`, before `dotnet publish` for an Android project, invoke `install-shims.sh`. (Out of scope of this repo — happens in DotnetDeployer.)
 
 ## Phase 4 — Validation on rpi4 (TODO)
 

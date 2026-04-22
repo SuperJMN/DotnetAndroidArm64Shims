@@ -1,0 +1,12 @@
+build-essential
+clang
+cmake
+ninja-build
+git
+python3
+python3-requests
+golang-go
+bison
+flex
+pkg-config
+zlib1g-dev
