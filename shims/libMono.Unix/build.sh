@@ -46,14 +46,17 @@ if [[ ! -f "$STUB_FILE" ]]; then
     cat > "$STUB_FILE" <<'EOF'
 // Compatibility stub: upstream removed Mono_Posix_Syscall_stime when glibc
 // deprecated stime(2). The pack-shipped binary still exports it.
-// Upstream builds with -fvisibility=hidden, so explicitly export.
+// Upstream builds with -fvisibility=hidden and only the attribute placement
+// used by MPH_API (between extern "C" and the return type) is honoured.
 #include <errno.h>
-__attribute__((visibility("default")))
-extern "C" int Mono_Posix_Syscall_stime(long *t) {
+#pragma GCC visibility push(default)
+extern "C" __attribute__((visibility("default")))
+int Mono_Posix_Syscall_stime(long *t) {
     (void)t;
     errno = ENOSYS;
     return -1;
 }
+#pragma GCC visibility pop
 EOF
     # Hook into both shared and static targets via target_sources after the
     # add_library() calls in upstream CMakeLists.
