@@ -38,12 +38,7 @@ jobs:
       - name: verify libZipSharpNative
         run: bash shims/libZipSharpNative/verify-symbols.sh
 
-      - name: build aapt2
-        run: bash shims/aapt2/build.sh
-      - name: verify aapt2 version
-        run: bash shims/aapt2/verify-version.sh
-      - name: verify aapt2 daemon
-        run: bash shims/aapt2/verify-daemon.sh
+      # aapt2 deferred for v1 — see docs/aapt2.md and STATUS.md.
 
       - name: package release tarball
         run: bash scripts/package-release.sh
