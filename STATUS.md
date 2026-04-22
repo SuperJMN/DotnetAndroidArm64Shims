@@ -10,7 +10,10 @@ Snapshot of where the work stands. Update as tasks complete.
 - [x] Inventoried which binaries in the pack are x86_64-only vs already aarch64 (see `README.md`).
 - [x] Filed upstream ask: [dotnet/android#11184](https://github.com/dotnet/android/issues/11184).
 
-## Phase 1 — Easy wins (in progress, awaiting CI run)
+## Phase 1 — Easy wins (done) ✅
+
+Released as [`36.1.53`](https://github.com/SuperJMN/DotnetAndroidArm64Shims/releases/tag/36.1.53) — partial v1 (no aapt2 yet).
+
 
 Order matters: the two `.so` shims are dependencies of MSBuild tasks that run before aapt2.
 
