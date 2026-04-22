@@ -1,0 +1,8 @@
+build/
+out/
+dist/
+*.tar.gz
+*.so
+!docs/**/*.so
+.vscode/
+.idea/
