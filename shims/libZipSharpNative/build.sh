@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Build libZipSharpNative-3-3.so for linux-arm64.
 #
-# Source:
-#   wrapper:   https://github.com/xamarin/LibZipSharp
-#   libzip:    https://github.com/nih-at/libzip   (vendored as submodule)
+# Source: https://github.com/dotnet/android-libzipsharp
+#   (xamarin/LibZipSharp moved to dotnet/android-libzipsharp)
+#
+# We delegate to upstream's own build.sh which knows the correct two-phase
+# CMake recipe (deps with -DBUILD_DEPENDENCIES=ON, then native lib with
+# -DBUILD_LIBZIP=ON). Trying to recreate that here drifts every time
+# upstream rearranges include paths.
 #
 # Output:
-#   out/linux-arm64/libZipSharpNative-3-3.so   (stripped)
-#
-# The `-3-3` soname suffix matches the upstream x86_64 binary in pack 36.1.53.
-# If a future pack bumps libzip past API revision 3, this file name changes
-# and a new shim release is needed (see pack-versions/<v>.env).
+#   out/linux-arm64/libZipSharpNative-<suffix>.so   (stripped)
 
 set -euo pipefail
 
@@ -21,15 +21,16 @@ source "$REPO_ROOT/pack-versions/$PACK_VERSION.env"
 
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/build/libZipSharpNative}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/out/linux-arm64}"
-SRC_REPO="https://github.com/xamarin/LibZipSharp"
+SRC_REPO="https://github.com/dotnet/android-libzipsharp"
 LIBZIPSHARP_REF="${LIBZIPSHARP_REF:-main}"
 SONAME_SUFFIX="${LIBZIPSHARP_SONAME_SUFFIX:-3-3}"
 
 mkdir -p "$WORK_DIR" "$OUT_DIR"
 
 if [[ ! -d "$WORK_DIR/src/.git" ]]; then
-    echo ">> cloning $SRC_REPO @ $LIBZIPSHARP_REF"
-    git clone --recurse-submodules --depth 1 --branch "$LIBZIPSHARP_REF" "$SRC_REPO" "$WORK_DIR/src"
+    echo ">> cloning $SRC_REPO @ $LIBZIPSHARP_REF (with submodules)"
+    git clone --recurse-submodules --depth 1 --branch "$LIBZIPSHARP_REF" \
+        "$SRC_REPO" "$WORK_DIR/src"
 else
     echo ">> reusing existing checkout at $WORK_DIR/src"
     git -C "$WORK_DIR/src" fetch --depth 1 origin "$LIBZIPSHARP_REF"
@@ -39,61 +40,34 @@ fi
 
 cd "$WORK_DIR/src"
 
-# Locate vendored libzip. Path has moved between LibZipSharp revisions.
-LIBZIP_DIR=""
-for candidate in external/libzip native/libzip libzip; do
-    if [[ -f "$candidate/CMakeLists.txt" ]]; then
-        LIBZIP_DIR="$candidate"
-        break
-    fi
-done
-[[ -n "$LIBZIP_DIR" ]] || { echo "!! could not locate vendored libzip"; find . -maxdepth 3 -name CMakeLists.txt; exit 2; }
-echo ">> vendored libzip at $LIBZIP_DIR"
+echo ">> running upstream build.sh"
+chmod +x ./build.sh
+./build.sh
 
-# Build libzip statically — we want a single self-contained .so to drop in.
-echo ">> building libzip"
-cmake -S "$LIBZIP_DIR" -B "$WORK_DIR/build-libzip" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DBUILD_TOOLS=OFF \
-    -DBUILD_REGRESS=OFF \
-    -DBUILD_EXAMPLES=OFF \
-    -DBUILD_DOC=OFF \
-    -DENABLE_BZIP2=OFF \
-    -DENABLE_LZMA=OFF \
-    -DENABLE_ZSTD=OFF
-cmake --build "$WORK_DIR/build-libzip" -j"$(nproc)"
+# Output: lzsbuild/lib/Linux/lib/libZipSharpNative-X-Y.so.X.Y.Z (with SOVERSION
+# symlinks alongside).
+PRODUCED=""
+while IFS= read -r f; do
+    PRODUCED="$f"; break
+done < <(find "$WORK_DIR/src/lzsbuild" -type f -name "libZipSharpNative-*.so*" -not -name '*.dbg' | sort)
+[[ -n "$PRODUCED" ]] || {
+    echo "!! libZipSharpNative-*.so not produced; tree:"
+    find "$WORK_DIR/src/lzsbuild" -name '*.so*' 2>/dev/null || true
+    exit 4
+}
+echo ">> produced: $PRODUCED"
 
-# Native wrapper. LibZipSharp's CMake layout has also drifted; try the common
-# spots in order.
-NATIVE_DIR=""
-for candidate in native LibZipSharp.Native; do
-    if [[ -f "$candidate/CMakeLists.txt" ]]; then
-        NATIVE_DIR="$candidate"
-        break
-    fi
-done
-[[ -n "$NATIVE_DIR" ]] || { echo "!! could not locate native wrapper sources"; find . -maxdepth 3 -name CMakeLists.txt; exit 3; }
-echo ">> native wrapper at $NATIVE_DIR"
+# Extract the actual SONAME suffix from the file (e.g. "3-3" or "3-4") so we
+# don't ship a misnamed file if upstream bumped libzip.
+ACTUAL_SUFFIX="$(basename "$PRODUCED" | sed -nE 's/^libZipSharpNative-([0-9]+-[0-9]+).*$/\1/p')"
+[[ -n "$ACTUAL_SUFFIX" ]] || ACTUAL_SUFFIX="$SONAME_SUFFIX"
+if [[ "$ACTUAL_SUFFIX" != "$SONAME_SUFFIX" ]]; then
+    echo "!! SONAME suffix drift: pin says '$SONAME_SUFFIX', upstream produced '$ACTUAL_SUFFIX'"
+    echo "   → bump LIBZIPSHARP_SONAME_SUFFIX in pack-versions/$PACK_VERSION.env"
+    exit 5
+fi
 
-LIBZIP_INCLUDE="$WORK_DIR/src/$LIBZIP_DIR/lib"
-LIBZIP_BUILD_INCLUDE="$WORK_DIR/build-libzip"
-LIBZIP_AR="$(find "$WORK_DIR/build-libzip" -name 'libzip.a' | head -1)"
-[[ -n "$LIBZIP_AR" ]] || { echo "!! libzip.a not produced"; find "$WORK_DIR/build-libzip" -name '*.a'; exit 4; }
-echo ">> libzip static archive: $LIBZIP_AR"
-
-cmake -S "$NATIVE_DIR" -B "$WORK_DIR/build-native" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    "-DLIBZIP_INCLUDE_DIR=$LIBZIP_INCLUDE;$LIBZIP_BUILD_INCLUDE" \
-    "-DLIBZIP_LIBRARY=$LIBZIP_AR"
-cmake --build "$WORK_DIR/build-native" -j"$(nproc)"
-
-PRODUCED="$(find "$WORK_DIR/build-native" -maxdepth 3 -type f -name '*.so*' | head -1)"
-[[ -n "$PRODUCED" ]] || { echo "!! native .so not produced"; find "$WORK_DIR/build-native" -name '*.so*'; exit 5; }
-
-TARGET="$OUT_DIR/libZipSharpNative-${SONAME_SUFFIX}.so"
+TARGET="$OUT_DIR/libZipSharpNative-${ACTUAL_SUFFIX}.so"
 cp "$PRODUCED" "$TARGET"
 strip --strip-unneeded "$TARGET"
 file "$TARGET"

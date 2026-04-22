@@ -147,9 +147,15 @@ for v in "${VERSIONS[@]}"; do
                 "$pack/tools/$(basename "$libzipsharp")" \
                 "$pack/tools/.x86_64-backup"
 
-    overlay_one "$workdir/aapt2" \
-                "$pack/tools/Linux/aapt2" \
-                "$pack/tools/Linux/.x86_64-backup"
+    if [[ -f "$workdir/aapt2" ]]; then
+        overlay_one "$workdir/aapt2" \
+                    "$pack/tools/Linux/aapt2" \
+                    "$pack/tools/Linux/.x86_64-backup"
+    else
+        echo "   ! aapt2 not present in this release tarball — skipping"
+        echo "     (the .so libs are installed; aapt2 must be provided separately"
+        echo "      until the v1.x release that includes it ships)"
+    fi
 
     rm -rf "$workdir"
 done

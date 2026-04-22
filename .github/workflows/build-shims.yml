@@ -41,7 +41,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shim: [libMono.Unix, libZipSharpNative, aapt2]
+        # aapt2 temporarily excluded — lzhiyong/android-sdk-tools turned out
+        # to be bionic-coupled (libcutils, libselinux, libsepol, libandroidfw,
+        # libincfs, c++_static). Tracked in docs/aapt2.md and STATUS.md.
+        shim: [libMono.Unix, libZipSharpNative]
     steps:
       - uses: actions/checkout@v4
       - name: install apt deps
@@ -56,14 +59,7 @@ jobs:
       - name: build
         run: bash "shims/${{ matrix.shim }}/build.sh"
       - name: verify (symbols)
-        if: matrix.shim != 'aapt2'
         run: bash "shims/${{ matrix.shim }}/verify-symbols.sh"
-      - name: verify (aapt2 version)
-        if: matrix.shim == 'aapt2'
-        run: bash shims/aapt2/verify-version.sh
-      - name: verify (aapt2 daemon)
-        if: matrix.shim == 'aapt2'
-        run: bash shims/aapt2/verify-daemon.sh
       - uses: actions/upload-artifact@v4
         with:
           name: shim-${{ matrix.shim }}-${{ env.PACK_VERSION }}
@@ -96,7 +92,6 @@ jobs:
           # touch placeholder x86_64 binaries so backup logic exercises
           : > "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/libMono.Unix.so"
           : > "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/libZipSharpNative-3-3.so"
-          : > "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/Linux/aapt2"
           # serve dist/ over a local HTTP server so install-shims.sh can fetch it
           mkdir -p "$RUNNER_TEMP/release/${PACK_VERSION}"
           cp dist/shims-linux-arm64-${PACK_VERSION}.tar.gz "$RUNNER_TEMP/release/${PACK_VERSION}/"

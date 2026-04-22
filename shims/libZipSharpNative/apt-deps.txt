@@ -1,4 +1,8 @@
 build-essential
 git
 cmake
-zlib1g-dev
+ninja-build
+pkg-config
+autoconf
+automake
+libtool

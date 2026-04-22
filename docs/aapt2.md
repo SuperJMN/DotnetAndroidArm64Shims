@@ -12,18 +12,23 @@ There is no Debian / Raspberry Pi OS package for `aapt2`. The Android SDK side-l
 
 ## Build options (and what we picked)
 
-### A. Standalone CMake fork — **picked**
+### Status (as of attempt 2): **blocked** — pivoting
 
-[lzhiyong/android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools) maintains a complete CMake-based build of `aapt2` (plus `aapt`, `aidl`, `zipalign`, `dexdump`, etc.) assembled from AOSP source with all dependencies vendored as git submodules. Their `build.py` driver targets the **Android NDK** (so the binaries normally end up bionic/Android), but the `CMakeLists.txt` files themselves are toolchain-agnostic — invoking CMake with the host `gcc`/`clang` produces a vanilla glibc executable.
+CI run #1 proved that the strategy below ("just don't pass the NDK toolchain") doesn't survive contact with reality. lzhiyong's root `CMakeLists.txt` unconditionally `add_subdirectory(lib)` / `(platform-tools)` / `(others)`, and `lib/CMakeLists.txt` `include()`s `libcutils.cmake`, `libselinux.cmake`, `libsepol.cmake`, `libandroidfw.cmake`, `libincfs.cmake`, `libprocessgroup.cmake`, `libopenscreen.cmake`, etc. Most of these are bionic-only (Android libc + Android-specific kernel headers); they don't configure on glibc.
 
-Our `shims/aapt2/build.sh` does exactly that: clones lzhiyong's repo + submodules, runs `get_source.py` to apply their patches, then invokes `cmake` with **no** `-DCMAKE_TOOLCHAIN_FILE=...android.toolchain.cmake` and **no** `-DANDROID_*` flags. The build produces a stripped `aapt2` ELF for whatever architecture the host CMake is running on — `aarch64` on the `ubuntu-22.04-arm` runner.
+Even narrowing the build to just the `aapt2` target via `ninja aapt2` doesn't help — CMake's *configure* step parses every `add_subdirectory()` regardless of which target we later build, so the bionic `.cmake` recipes blow up before we get to compile a single file.
 
-**Pros**: small, self-contained, builds in ~30 min on a Pi 4. CMake recipe is already debugged. No NDK install needed.
-**Cons**: lzhiyong's tip lags AOSP by months. We pin a commit that produces an `aapt2 version` string matching whatever pack we're shimming for; if no commit matches we fall back to B.
+`build-tools/aapt2.cmake` confirms the dep chain: `aapt2` links `libandroidfw libincfs libselinux libsepol libpackagelistparser libutils libcutils libziparchive libbase libbuildversion liblog protobuf::libprotoc protobuf::libprotobuf expat crypto ssl pcre2-8 png_static c++_static dl`. That's effectively half of AOSP `system/core` + `frameworks/base/libs/androidfw`. Patching it down to glibc-friendly subset is a real porting effort, not a build-script fix.
 
-### B. AOSP source-of-truth (fallback)
+**v1 ships without aapt2.** The two `.so` shims unblock most of the .NET Android MSBuild graph; `aapt2` becomes a separate workstream tracked here. Users who have a working `aapt2` from another source (e.g. an Android-on-Linux distro) can drop it in `~/.dotnet/packs/Microsoft.Android.Sdk.Linux/<v>/tools/Linux/aapt2` themselves.
 
-`repo init && repo sync` against `platform/frameworks/base` plus the minimum dependency set, then `mma aapt2` under Soong. Tens of GB of checkout and Soong on arm64 is unhappy. Reserved for the case where lzhiyong has no commit matching the upstream `aapt2` version we need.
+### A. ~~Standalone CMake fork (lzhiyong)~~ — **abandoned**
+
+[lzhiyong/android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools) maintains a CMake build of `aapt2` (plus `aapt`, `aidl`, `zipalign`, `dexdump`) assembled from AOSP source with all dependencies vendored as git submodules. We initially picked this thinking the recipe was toolchain-agnostic. It isn't — the included `.cmake` files target the Android NDK / bionic libc and don't configure on glibc (see "Status" above).
+
+### B. AOSP source-of-truth (next to try)
+
+`repo init && repo sync` against `platform/frameworks/base` plus the minimum dependency set, then build `aapt2` under Soong. Tens of GB of checkout. Soong on arm64 is reportedly unhappy. This is now the most-likely path forward despite the heaviness.
 
 ### C. ~~Termux recipe~~ — **abandoned**
 
@@ -32,6 +37,10 @@ Originally we planned to fork Termux's `packages/aapt2/build.sh`. Termux **no lo
 ### D. ~~Pull from a community arm64 build~~ — **doesn't exist**
 
 There is no public glibc linux-arm64 prebuilt of `aapt2` as of 2025 (Google maven publishes x86_64 / x86 / windows / osx only; tracked at [issuetracker.google.com/issues/227219818](https://issuetracker.google.com/issues/227219818)). We have to build it.
+
+### E. Patch lzhiyong heavily (maybe)
+
+In principle one could `sed` the bionic `add_subdirectory(...)` lines out of lzhiyong's root CMakeLists, then port each of `libcutils` / `libselinux` / `libsepol` / `libandroidfw` / `libincfs` / `libpackagelistparser` to build against glibc. That's a multi-week porting job and gets us a binary that's likely to drift from upstream's `aapt2 version` string anyway. Not pursuing.
 
 ## Verification checklist before publishing a build
 

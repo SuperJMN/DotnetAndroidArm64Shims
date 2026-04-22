@@ -1,6 +1,5 @@
 build-essential
 git
-autoconf
-automake
-libtool
+cmake
+ninja-build
 pkg-config

@@ -14,16 +14,17 @@ Snapshot of where the work stands. Update as tasks complete.
 
 Order matters: the two `.so` shims are dependencies of MSBuild tasks that run before aapt2.
 
-- [x] **`libMono.Unix.so` for linux-arm64.** Build script at `shims/libMono.Unix/build.sh`, symbol-parity verifier at `shims/libMono.Unix/verify-symbols.sh`. Pinned reference: 346 exported symbols extracted from upstream `Microsoft.Android.Sdk.Linux/36.1.53`.
-- [x] **`libZipSharpNative-3-3.so` for linux-arm64.** Build script at `shims/libZipSharpNative/build.sh` (vendored libzip 1.10.1 built statically, then native wrapper). Soname suffix `-3-3` pinned in `pack-versions/36.1.53.env`.
+- [x] **`libMono.Unix.so` for linux-arm64.** Build script at `shims/libMono.Unix/build.sh` invokes upstream `mono/mono.posix`'s CMake at `src/native/` with `-DTARGET_PLATFORM=host-linux-x64` (which on an arm64 host yields a native arm64 build per `cmake/toolchain.linux.cmake`). Symbol-parity verifier at `shims/libMono.Unix/verify-symbols.sh`. Pinned reference: 346 exported symbols extracted from upstream `Microsoft.Android.Sdk.Linux/36.1.53`.
+- [x] **`libZipSharpNative-3-3.so` for linux-arm64.** Build script at `shims/libZipSharpNative/build.sh` delegates to upstream `dotnet/android-libzipsharp`'s own `build.sh` (two-phase CMake: `-DBUILD_DEPENDENCIES=ON` then `-DBUILD_LIBZIP=ON`). Soname suffix `-3-3` pinned in `pack-versions/36.1.53.env`.
 - [x] CI: GitHub Actions matrix on `ubuntu-22.04-arm` at `.github/workflows/build-shims.yml`.
 
-## Phase 2 — aapt2 (in progress, awaiting CI run)
+## Phase 2 — aapt2 (blocked, see investigation notes)
 
-- [x] Build path **picked: A**, slightly redirected. Termux dropped their aapt2 recipe (Option C is dead). We use [lzhiyong/android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools) — a complete CMake build of AOSP `aapt2` with all deps vendored — invoked **without** the NDK toolchain file so it produces a vanilla glibc `aarch64` ELF on the host runner. See `docs/aapt2.md` for rationale and `shims/aapt2/build.sh` for the script.
-- [x] Upstream `aapt2 version` extraction wired into `pack-versions/<v>.env::AAPT2_VERSION_STRING` and into `scripts/extract-reference-symbols.sh`.
-- [x] `verify-version.sh` matches the daemon's `aapt2 version` against the pinned string byte-for-byte (CI fails on mismatch → blocks XA0111 in production).
-- [x] `verify-daemon.sh` spawns `aapt2 daemon` and confirms it speaks before exiting (catches library-load failures the version string misses).
+**v1 ships without aapt2** — the .so shims unblock most of the MSBuild graph and v1 is useful even partial.
+
+- [ ] Strategy pivot needed. Original plan (use [lzhiyong/android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools) without the NDK toolchain file) was proven wrong by CI: lzhiyong's CMake unconditionally pulls in bionic-coupled libs (libcutils, libselinux, libsepol, libandroidfw, libincfs, c++_static). See [`docs/aapt2.md`](docs/aapt2.md) for the full breakdown and the new candidate options (B: AOSP+Soong; E: heavy lzhiyong patching). Tracked as a separate workstream.
+- [x] Upstream `aapt2 version` extraction wired into `pack-versions/<v>.env::AAPT2_VERSION_STRING` (groundwork for whichever option we pick).
+- [x] `verify-version.sh` and `verify-daemon.sh` exist; will be re-enabled in CI once a working build exists.
 
 ## Phase 3 — Distribution + integration (in progress)
 

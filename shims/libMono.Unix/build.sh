@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Build libMono.Unix.so for linux-arm64.
 #
-# Source: https://github.com/mono/Mono.Posix
-# The native helper is a small C library wrapping POSIX calls. The pack ships
-# it as `tools/libMono.Unix.so`. We rebuild for aarch64 and drop in the same
-# place via install-shims.sh.
+# Source:  https://github.com/mono/mono.posix
+#
+# We invoke the upstream CMakeLists at src/native/ directly. Passing
+# -DTARGET_PLATFORM=host-linux-x64 on an arm64 host is the documented way to
+# produce a *native* build (toolchain.linux.cmake sets IS_CROSS_BUILD=False
+# for any host-linux-* value other than arm64/arm/armv6, leaving the system
+# compiler untouched). Result: a native aarch64 ELF without pulling in
+# cross-compile toolchain packages.
 #
 # Output:
 #   out/linux-arm64/libMono.Unix.so   (stripped)
-#
-# Runs on a clean linux-arm64 host (ubuntu-22.04-arm CI runner). Required apt
-# packages are listed in `apt-deps.txt` next to this script.
 
 set -euo pipefail
 
@@ -21,10 +22,7 @@ source "$REPO_ROOT/pack-versions/$PACK_VERSION.env"
 
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/build/libMono.Unix}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/out/linux-arm64}"
-SRC_REPO="https://github.com/mono/Mono.Posix"
-# Pin the source revision. Mono.Posix is fairly stable; bump only if a new
-# pack version exposes a P/Invoke entry point we don't ship yet (verify-symbols
-# will catch this).
+SRC_REPO="https://github.com/mono/mono.posix"
 MONO_POSIX_REF="${MONO_POSIX_REF:-main}"
 
 mkdir -p "$WORK_DIR" "$OUT_DIR"
@@ -38,50 +36,31 @@ else
     git -C "$WORK_DIR/src" checkout FETCH_HEAD
 fi
 
-# The native sources live under src/native. Layout has shifted across revisions
-# so we probe a couple of plausible roots.
-NATIVE_DIR=""
-for candidate in src/native src/Mono.Posix/native external/Mono.Posix/src/native; do
-    if [[ -d "$WORK_DIR/src/$candidate" ]]; then
-        NATIVE_DIR="$WORK_DIR/src/$candidate"
-        break
-    fi
-done
-[[ -n "$NATIVE_DIR" ]] || { echo "!! could not locate Mono.Posix native sources"; ls "$WORK_DIR/src"; exit 2; }
-echo ">> native sources: $NATIVE_DIR"
+BUILD_DIR="$WORK_DIR/build"
+rm -rf "$BUILD_DIR"
 
-cd "$NATIVE_DIR"
+echo ">> configuring (native arm64 via TARGET_PLATFORM=host-linux-x64)"
+cmake -GNinja -B "$BUILD_DIR" -S "$WORK_DIR/src/src/native" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DTARGET_PLATFORM=host-linux-x64 \
+    -DSTRIP_DEBUG=ON
 
-# Mono.Posix uses autotools when present, falling back to a plain Makefile in
-# older revisions. Try autotools first.
-if [[ -f autogen.sh ]]; then
-    echo ">> autotools build"
-    ./autogen.sh
-    ./configure
-    make -j"$(nproc)"
-elif [[ -f configure ]]; then
-    ./configure
-    make -j"$(nproc)"
-elif [[ -f Makefile ]]; then
-    echo ">> plain make"
-    make -j"$(nproc)"
-elif [[ -f CMakeLists.txt ]]; then
-    echo ">> cmake build"
-    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-    cmake --build build -j"$(nproc)"
-else
-    echo "!! no recognised build system in $NATIVE_DIR"
-    ls -la
-    exit 3
-fi
+echo ">> building"
+cmake --build "$BUILD_DIR" -j"$(nproc)"
 
-# Locate the produced .so. Upstream names vary (libMonoPosixHelper.so,
-# libMono-Posix.so, etc.). We rename to the pack's expected file name.
+# Locate the produced .so. CMake puts it in build/lib/ by default. The
+# upstream target name is `Mono.Unix` so the output is libMono.Unix.so
+# (potentially with a SOVERSION suffix and a symlink chain).
 PRODUCED=""
-while IFS= read -r -d '' f; do
+while IFS= read -r f; do
     PRODUCED="$f"; break
-done < <(find . -maxdepth 4 -type f \( -name 'libMonoPosixHelper*.so*' -o -name 'libMono.Unix.so*' -o -name 'libMono-Posix*.so*' \) -print0)
-[[ -n "$PRODUCED" ]] || { echo "!! produced .so not found"; find . -name '*.so*' -type f; exit 4; }
+done < <(find "$BUILD_DIR" -type f -name 'libMono.Unix.so*' -not -name '*.dbg' | sort)
+[[ -n "$PRODUCED" ]] || {
+    echo "!! libMono.Unix.so not produced; tree:"
+    find "$BUILD_DIR" -name '*.so*'
+    exit 4
+}
+echo ">> produced: $PRODUCED"
 
 cp "$PRODUCED" "$OUT_DIR/libMono.Unix.so"
 strip --strip-unneeded "$OUT_DIR/libMono.Unix.so"
