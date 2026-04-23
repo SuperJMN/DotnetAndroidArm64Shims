@@ -135,8 +135,15 @@ jobs:
             rm -f "$workdir/pack.nupkg"
           done < .work/to-check.txt
 
-          echo "aliasable_count=$(wc -l < .work/aliasable.txt)" >> "$GITHUB_OUTPUT"
-          echo "needs_build_count=$(grep -c '^version=' .work/needs-build.txt 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+          aliasable_count=$(wc -l < .work/aliasable.txt | tr -d ' ')
+          if [[ -s .work/needs-build.txt ]]; then
+            needs_build_count=$(grep -c '^version=' .work/needs-build.txt || true)
+            needs_build_count=${needs_build_count:-0}
+          else
+            needs_build_count=0
+          fi
+          echo "aliasable_count=$aliasable_count" >> "$GITHUB_OUTPUT"
+          echo "needs_build_count=$needs_build_count" >> "$GITHUB_OUTPUT"
 
       - name: open PR for aliasable versions
         if: steps.classify.outputs.aliasable_count != '0' && steps.classify.outputs.aliasable_count != ''
