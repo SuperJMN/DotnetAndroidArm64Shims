@@ -1,0 +1,206 @@
+name: watch-nuget
+
+# Weekly poll of NuGet for new Microsoft.Android.Sdk.Linux pack versions.
+# For each version we don't already cover (no shim release tag, no alias in
+# compatibility.json), we sha256-fingerprint the three host binaries and:
+#
+#   * If all three sha256s match an existing release's anchors → open a PR
+#     adding an alias entry to compatibility.json. Zero-rebuild expansion.
+#
+#   * If any sha256 has drifted → open an issue requesting a new shim
+#     release build. The body includes the new sha256s, the AAPT2 version
+#     string, and a one-click link to dispatch release.yml for the new tag.
+#
+# This is the mechanism that lets one shim release cover an entire pack
+# subseries (35.0.x, 36.1.x …) without per-version rebuilds, and that
+# contains the blast radius when Microsoft does bump a binary: an
+# actionable issue, not silent breakage.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      pack_version:
+        description: "Specific pack version to check (default: scan all unknown)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install deps
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends curl unzip jq coreutils
+
+      - name: discover unknown pack versions
+        id: discover
+        run: |
+          set -euo pipefail
+          mkdir -p .work
+          curl -fsSL "https://api.nuget.org/v3-flatcontainer/microsoft.android.sdk.linux/index.json" \
+            > .work/index.json
+          jq -r '.versions[]' .work/index.json > .work/all-versions.txt
+
+          # Versions we already cover: existing GitHub release tags + manifest aliases.
+          gh api repos/${{ github.repository }}/releases --paginate \
+            -q '.[].tag_name' > .work/known-tags.txt || echo "" > .work/known-tags.txt
+          jq -r '.aliases | keys[]' compatibility.json > .work/known-aliases.txt
+          sort -u .work/known-tags.txt .work/known-aliases.txt > .work/known.txt
+
+          if [[ -n "${{ github.event.inputs.pack_version }}" ]]; then
+            echo "${{ github.event.inputs.pack_version }}" > .work/to-check.txt
+          else
+            grep -Fxv -f .work/known.txt .work/all-versions.txt > .work/to-check.txt || true
+          fi
+
+          echo "to_check_count=$(wc -l < .work/to-check.txt)" >> "$GITHUB_OUTPUT"
+          echo "==== unknown versions ===="
+          cat .work/to-check.txt || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: fingerprint and classify
+        if: steps.discover.outputs.to_check_count != '0'
+        id: classify
+        run: |
+          set -euo pipefail
+          mkdir -p .work/packs
+
+          # arrays of "version" lines, one per outcome
+          : > .work/aliasable.txt    # version sha-tuple-matches an existing release
+          : > .work/needs-build.txt  # version has at least one drifted sha
+
+          jq -c '.anchors | to_entries[]' compatibility.json > .work/anchor-entries.jsonl
+
+          while IFS= read -r v; do
+            [[ -z "$v" ]] && continue
+            echo "==== fingerprinting $v ===="
+            workdir=".work/packs/$v"
+            mkdir -p "$workdir"
+            url="https://www.nuget.org/api/v2/package/Microsoft.Android.Sdk.Linux/$v"
+            if ! curl -fsSL --retry 3 -o "$workdir/pack.nupkg" "$url"; then
+              echo "  ! could not download $v, skipping"
+              continue
+            fi
+            unzip -q -o "$workdir/pack.nupkg" \
+              "tools/Linux/aapt2" \
+              "tools/libMono.Unix.so" \
+              "tools/libZipSharpNative-3-3.so" \
+              -d "$workdir" 2>/dev/null || {
+                echo "  ! pack layout differs for $v (missing one of the three host binaries)"
+                echo "$v" >> .work/needs-build.txt
+                continue
+            }
+
+            sha_aapt2=$(sha256sum "$workdir/tools/Linux/aapt2" | awk '{print $1}')
+            sha_mono=$(sha256sum "$workdir/tools/libMono.Unix.so" | awk '{print $1}')
+            sha_libzip=$(sha256sum "$workdir/tools/libZipSharpNative-3-3.so" | awk '{print $1}')
+            echo "  aapt2:  $sha_aapt2"
+            echo "  mono:   $sha_mono"
+            echo "  libzip: $sha_libzip"
+
+            match_tag=""
+            while IFS= read -r entry; do
+              tag=$(jq -r '.key' <<<"$entry")
+              a=$(jq -r '.value["tools/Linux/aapt2"]' <<<"$entry")
+              m=$(jq -r '.value["tools/libMono.Unix.so"]' <<<"$entry")
+              z=$(jq -r '.value["tools/libZipSharpNative-3-3.so"]' <<<"$entry")
+              if [[ "$sha_aapt2" == "$a" && "$sha_mono" == "$m" && "$sha_libzip" == "$z" ]]; then
+                match_tag="$tag"
+                break
+              fi
+            done < .work/anchor-entries.jsonl
+
+            if [[ -n "$match_tag" ]]; then
+              echo "  → all three sha256s match release $match_tag, will alias"
+              echo "$v $match_tag" >> .work/aliasable.txt
+            else
+              echo "  → drift detected, needs new shim build"
+              {
+                echo "version=$v"
+                echo "aapt2=$sha_aapt2"
+                echo "mono=$sha_mono"
+                echo "libzip=$sha_libzip"
+                echo "---"
+              } >> .work/needs-build.txt
+            fi
+
+            rm -f "$workdir/pack.nupkg"
+          done < .work/to-check.txt
+
+          echo "aliasable_count=$(wc -l < .work/aliasable.txt)" >> "$GITHUB_OUTPUT"
+          echo "needs_build_count=$(grep -c '^version=' .work/needs-build.txt 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+
+      - name: open PR for aliasable versions
+        if: steps.classify.outputs.aliasable_count != '0' && steps.classify.outputs.aliasable_count != ''
+        run: |
+          set -euo pipefail
+          branch="watch/aliases-$(date -u +%Y%m%d)"
+          git config user.name "shim-watcher"
+          git config user.email "actions@github.com"
+          git checkout -b "$branch"
+
+          # Insert each new alias into compatibility.json sorted within the version range.
+          while read -r v tag; do
+            jq --arg v "$v" --arg t "$tag" '.aliases[$v] = $t' compatibility.json > compatibility.json.new
+            mv compatibility.json.new compatibility.json
+          done < .work/aliasable.txt
+
+          git add compatibility.json
+          git commit -m "watcher: add aliases for $(wc -l < .work/aliasable.txt) new pack version(s)"
+          git push origin "$branch"
+
+          body="Auto-generated by .github/workflows/watch-nuget.yml.
+
+          The following Microsoft.Android.Sdk.Linux pack version(s) were published since the last scan and ship host binaries that are byte-identical (sha256-verified) to existing shim releases. Adding alias entries to compatibility.json so install-shims.sh can serve them without a rebuild.
+
+          \`\`\`
+          $(cat .work/aliasable.txt)
+          \`\`\`"
+          gh pr create --base main --head "$branch" \
+            --title "watcher: alias new pack versions" \
+            --body "$body"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: open issue for drifted versions
+        if: steps.classify.outputs.needs_build_count != '0' && steps.classify.outputs.needs_build_count != ''
+        run: |
+          set -euo pipefail
+          body="Auto-generated by .github/workflows/watch-nuget.yml.
+
+          One or more new Microsoft.Android.Sdk.Linux pack versions ship host binaries whose sha256 does not match any existing shim release in \`compatibility.json\`. A new shim release build is required.
+
+          ## Drift report
+
+          \`\`\`
+          $(cat .work/needs-build.txt)
+          \`\`\`
+
+          ## To remediate
+
+          For each version listed above:
+
+          1. Inspect what changed: \`./scripts/extract-reference-symbols.sh <version>\`
+          2. If only the aapt2 version string drifted (most common case), create \`pack-versions/<version>.env\` with the new \`AAPT2_VERSION_STRING\` / \`AAPT2_AOSP_BUILD_ID\` and dispatch \`release.yml\` with that pack version. The two .so shims should rebuild with the same sha256; if they do, only \`tools/Linux/aapt2\` actually needs the new release.
+          3. If a .so soname suffix changed (e.g. \`-3-3\` → \`-3-4\`), bump \`LIBZIPSHARP_SONAME_SUFFIX\` and the upstream submodule pin.
+          4. After the release publishes, add the new sha256 anchors to \`compatibility.json::anchors.<new-tag>\` and re-run this workflow with \`pack_version: <version>\` to convert the issue into an aliasable PR.
+
+          Dispatch link: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml"
+
+          gh issue create \
+            --title "shim drift detected for new pack version(s)" \
+            --label "shim-drift" \
+            --body "$body" || \
+          gh issue create \
+            --title "shim drift detected for new pack version(s)" \
+            --body "$body"
+        env:
+          GH_TOKEN: ${{ github.token }}

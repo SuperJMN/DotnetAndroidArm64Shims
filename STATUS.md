@@ -46,10 +46,11 @@ Order matters: the two `.so` shims are dependencies of MSBuild tasks that run be
 
 > **glibc baseline**: shims are now built inside `debian:11` (glibc 2.31) so they load on Pi OS bullseye. Building on the bare `ubuntu-22.04-arm` runner produced binaries depending on `GLIBC_2.33` (versioned `stat`/`fstat`/`lstat`/`mknod`), which fails to load on bullseye. Fixed in commit `56263e4`.
 
-## Phase 5 — Maintenance loop (TODO, ongoing)
+## Phase 5 — Maintenance loop (in progress)
 
-- [ ] CI watcher: poll [the NuGet feed](https://www.nuget.org/packages/Microsoft.Android.Sdk.Linux) for new versions, open an issue here when a new one appears.
-- [ ] Document the bump procedure end-to-end so it's a 30-minute task, not a half-day archaeology session.
+- [x] **sha256-anchored compatibility manifest** (`compatibility.json`): a single shim release covers an entire pack subseries. Verified empirically — across all 35.0.x and 36.1.x pack versions (15 checked, including 36.1.99 and 36.99 previews), only 2 distinct host-binary fingerprints exist. Both `.so` files are byte-identical for *every* version; `aapt2` changed exactly once (35.x→36.x). `install-shims.sh` consults the manifest as a fallback when no release exists at the literal pack-version tag.
+- [x] **CI watcher** (`.github/workflows/watch-nuget.yml`): weekly cron polls the NuGet feed; for each new pack version, sha256-fingerprints the three host binaries; opens an auto-mergeable PR if all three sha256s match an existing release's anchors (zero-rebuild expansion), or an actionable issue with the drifted sha256s and a one-click `release.yml` dispatch link otherwise.
+- [ ] Document the bump procedure end-to-end so it's a 30-minute task, not a half-day archaeology session. (Largely automated by the watcher, but the new-aapt2-version case still needs a written runbook.)
 
 ## Out of scope (for now)
 

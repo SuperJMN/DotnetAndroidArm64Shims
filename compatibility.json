@@ -1,0 +1,52 @@
+{
+  "$comment": [
+    "Compatibility manifest for Microsoft.Android.Sdk.Linux pack versions.",
+    "",
+    "Each entry maps a pack version to the shim release tag whose tarball",
+    "bit-for-bit shims the same upstream x86_64 binaries. Microsoft frequently",
+    "republishes the workload pack with the same host binaries (only the .NET",
+    "managed bits change), so most pack versions can be served from a single",
+    "shim release.",
+    "",
+    "Identity entries (e.g. \"36.1.53\" → \"36.1.53\") are omitted: install-shims.sh",
+    "tries the literal pack version first and only consults this manifest as a",
+    "fallback when no release exists at that exact tag.",
+    "",
+    "An entry is added here when the watcher (.github/workflows/watch-nuget.yml)",
+    "verifies that the new pack version's three host binaries (aapt2, libMono.Unix.so,",
+    "libZipSharpNative-3-3.so) are byte-identical to those in an existing shim",
+    "release. If any sha256 drifts, the watcher opens an issue requesting a new",
+    "release build."
+  ],
+  "schema": 1,
+  "aliases": {
+    "35.0.7": "35.0.105",
+    "35.0.24": "35.0.105",
+    "35.0.39": "35.0.105",
+    "35.0.50": "35.0.105",
+    "35.0.61": "35.0.105",
+    "35.0.78": "35.0.105",
+    "35.0.92": "35.0.105",
+    "35.0.101": "35.0.105",
+    "36.1.2": "36.1.53",
+    "36.1.12": "36.1.53",
+    "36.1.30": "36.1.53",
+    "36.1.43": "36.1.53",
+    "36.1.99-preview.1.120": "36.1.53",
+    "36.1.99-preview.2.154": "36.1.53",
+    "36.99.0-preview.3.10": "36.1.53"
+  },
+  "anchors": {
+    "$comment": "sha256 of the upstream x86_64 binaries that each shim release replaces. The watcher uses these to detect drift.",
+    "35.0.105": {
+      "tools/Linux/aapt2": "d1096e11aba9c974644369ee3c50d239acac3f3428ffa928e5b9c14dfb7a57de",
+      "tools/libMono.Unix.so": "ce99f51103806110793e8ac8f24a9218589ad59d7cfdcf41a999bf6835f406b5",
+      "tools/libZipSharpNative-3-3.so": "cb52ccf5bf5fead6a080f597127a3ebe90aa1e7a8e7573aa51b119034305fcfb"
+    },
+    "36.1.53": {
+      "tools/Linux/aapt2": "1a6a396b9cd071f7040071fdd108718cb98c3c9f4960044f373b288993d19eb7",
+      "tools/libMono.Unix.so": "ce99f51103806110793e8ac8f24a9218589ad59d7cfdcf41a999bf6835f406b5",
+      "tools/libZipSharpNative-3-3.so": "cb52ccf5bf5fead6a080f597127a3ebe90aa1e7a8e7573aa51b119034305fcfb"
+    }
+  }
+}
