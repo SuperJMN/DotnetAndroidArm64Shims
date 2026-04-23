@@ -77,7 +77,7 @@ jobs:
           : > .work/aliasable.txt    # version sha-tuple-matches an existing release
           : > .work/needs-build.txt  # version has at least one drifted sha
 
-          jq -c '.anchors | to_entries[]' compatibility.json > .work/anchor-entries.jsonl
+          jq -c '.anchors | to_entries[] | select(.value | type == "object")' compatibility.json > .work/anchor-entries.jsonl
 
           while IFS= read -r v; do
             [[ -z "$v" ]] && continue
@@ -154,6 +154,10 @@ jobs:
           done < .work/aliasable.txt
 
           git add compatibility.json
+          if git diff --cached --quiet; then
+            echo "no manifest changes (all aliases already present); skipping PR"
+            exit 0
+          fi
           git commit -m "watcher: add aliases for $(wc -l < .work/aliasable.txt) new pack version(s)"
           git push origin "$branch"
 
