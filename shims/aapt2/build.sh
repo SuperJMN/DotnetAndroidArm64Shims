@@ -78,15 +78,23 @@ echo ">> stamping aapt version → ${MAJOR}.${MINOR}-${BUILDID}"
 # Idempotent sed: only rewrite if the canonical upstream literal is still there.
 sed -i -E "s|sMajorVersion = \"[0-9]+\";|sMajorVersion = \"${MAJOR}\";|" "$UTIL_CPP"
 sed -i -E "s|sMinorVersion = \"[0-9]+\";|sMinorVersion = \"${MINOR}\";|" "$UTIL_CPP"
-sed -i    "s|#define PLACEHOLDER \"SOONG BUILD NUMBER PLACEHOLDER\"|#define PLACEHOLDER \"${BUILDID}\"|" "$LIBBV_CPP"
+
+# soong_build_number: patch the array initializer literal directly. We must
+# NOT touch the PLACEHOLDER #define on the line above — when compiling for
+# __ANDROID__ (which we are, since the NDK targets android-30), GetBuildNumber()
+# does `strcmp(PLACEHOLDER, soong_build_number) != 0` to detect whether Soong
+# patched the buffer at link time. If we redefine PLACEHOLDER to match, the
+# strcmp returns 0 and the function falls through to the system-property
+# lookup which returns "" on a non-Android host, leaving the build-id empty.
+sed -i -E "s|char soong_build_number\[128\] = PLACEHOLDER;|char soong_build_number[128] = \"${BUILDID}\";|" "$LIBBV_CPP"
 
 # Sanity-check the patches landed.
 grep -q "sMajorVersion = \"${MAJOR}\";" "$UTIL_CPP" \
     || { echo "!! sMajorVersion patch did not apply — upstream may have changed Util.cpp"; exit 5; }
 grep -q "sMinorVersion = \"${MINOR}\";" "$UTIL_CPP" \
     || { echo "!! sMinorVersion patch did not apply — upstream may have changed Util.cpp"; exit 5; }
-grep -q "PLACEHOLDER \"${BUILDID}\""    "$LIBBV_CPP" \
-    || { echo "!! soong_build_number patch did not apply — upstream may have moved the define"; exit 5; }
+grep -q "soong_build_number\[128\] = \"${BUILDID}\";" "$LIBBV_CPP" \
+    || { echo "!! soong_build_number patch did not apply — upstream may have moved the definition"; exit 5; }
 
 # --- 3. Apply ReVanced's local patches (idempotent) -------------------------
 cd "$SRC_DIR"
