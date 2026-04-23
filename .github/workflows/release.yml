@@ -14,7 +14,8 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-so:
+    name: build-.so-shims
     runs-on: ubuntu-22.04-arm
     env:
       PACK_VERSION: ${{ github.event.inputs.pack_version || github.ref_name }}
@@ -25,8 +26,7 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y curl unzip binutils
           bash scripts/extract-reference-symbols.sh
-
-      - name: build shims inside debian:11 (glibc 2.31 baseline)
+      - name: build .so shims inside debian:11 (glibc 2.31 baseline)
         run: |
           docker run --rm \
             -v "$PWD":/work -w /work \
@@ -35,18 +35,60 @@ jobs:
               set -euo pipefail
               apt-get update -y
               apt-get install -y --no-install-recommends ca-certificates curl
-              sort -u shims/*/apt-deps.txt | xargs apt-get install -y --no-install-recommends
+              sort -u shims/libMono.Unix/apt-deps.txt shims/libZipSharpNative/apt-deps.txt | \
+                xargs apt-get install -y --no-install-recommends
               bash shims/libMono.Unix/build.sh
               bash shims/libMono.Unix/verify-symbols.sh
               bash shims/libZipSharpNative/build.sh
               bash shims/libZipSharpNative/verify-symbols.sh
             '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shim-so-${{ env.PACK_VERSION }}
+          path: out/linux-arm64/
+          retention-days: 7
 
-      # aapt2 deferred for v1 — see docs/aapt2.md and STATUS.md.
+  build-aapt2:
+    name: build-aapt2
+    # x86_64 host — Android NDK is published for linux-x86_64 only. The
+    # cross-compiled binary is arm64-v8a static-bionic and runs on Linux arm64.
+    runs-on: ubuntu-22.04
+    env:
+      PACK_VERSION: ${{ github.event.inputs.pack_version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install host deps
+        run: |
+          sudo apt-get update -y
+          xargs -a shims/aapt2/apt-deps.txt sudo apt-get install -y --no-install-recommends
+      - name: build aapt2
+        run: bash shims/aapt2/build.sh
+      - name: verify version string matches pack
+        run: bash shims/aapt2/verify-version.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shim-aapt2-${{ env.PACK_VERSION }}
+          path: out/linux-arm64/
+          retention-days: 7
 
+  release:
+    name: package + publish
+    needs: [build-so, build-aapt2]
+    runs-on: ubuntu-22.04-arm
+    env:
+      PACK_VERSION: ${{ github.event.inputs.pack_version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: collect built shims
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shim-*-${{ env.PACK_VERSION }}
+          path: out/linux-arm64/
+          merge-multiple: true
+      - name: list collected artifacts
+        run: ls -la out/linux-arm64/
       - name: package release tarball
         run: bash scripts/package-release.sh
-
       - name: publish github release
         uses: softprops/action-gh-release@v2
         with:

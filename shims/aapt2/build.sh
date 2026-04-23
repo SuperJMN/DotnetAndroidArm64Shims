@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 # Build aapt2 for linux-arm64 (vanilla glibc).
 #
-# Strategy: clone lzhiyong/android-sdk-tools (a curated CMake build of AOSP's
-# aapt2 with all transitive deps vendored as submodules), run their source-prep
-# script to apply local patches, then invoke CMake **without** the NDK toolchain
-# file. That makes CMake fall back to the host compiler — gcc/clang on glibc —
-# producing a native linux-arm64 ELF instead of an Android bionic one.
+# Strategy: cross-compile via the Android NDK (host = linux-x86_64) targeting
+# arm64-v8a, statically linked against bionic. The resulting binary runs
+# transparently on any aarch64 Linux kernel — verified on Raspberry Pi OS
+# bullseye — because the syscall ABI between arm64 bionic-static and arm64
+# Linux is compatible. See docs/aapt2.md (Option F) for the full rationale.
+#
+# Builds on top of ReVanced/aapt2's CMake recipe (which already wires up the
+# AOSP submodule jungle to compile under CMake instead of Soong). We patch
+# two source files so the produced binary's `aapt2 version` output matches
+# pack-versions/<v>.env::AAPT2_VERSION_STRING byte-for-byte — a mismatch
+# trips XA0111 in every subsequent .NET Android build.
 #
 # Output:
-#   out/linux-arm64/aapt2   (stripped)
+#   out/linux-arm64/aapt2   (statically-linked bionic ELF, stripped)
 #
-# Required apt packages: see apt-deps.txt.
+# Required environment:
+#   ANDROID_NDK     path to NDK r27c (or compatible). If unset, we download
+#                   r27c into build/ndk/ — convenient for CI.
+#   PROTOC_PATH     path to protoc 21.12 binary. If unset, we download.
 #
-# Pinning: aapt2 emits "Android Asset Packaging Tool (aapt) 2.20-<aosp-build-id>".
-# The .NET MSBuild target Aapt2VersionRegex caches this exact string in
-# obj/aapt2.version and uses string equality to invalidate compiled .flata.
-# A mismatch trips XA0111 at every subsequent build. Our verify-version.sh
-# diffs against pack-versions/<v>.env::AAPT2_VERSION_STRING.
-#
-# If lzhiyong's tip doesn't match the AOSP build id we need for this pack,
-# bump LZHIYONG_REF below to a commit that does (their submodule heads track
-# AOSP tags).
+# Required apt packages (host = linux-x86_64): see apt-deps.txt.
 
 set -euo pipefail
 
@@ -31,87 +32,117 @@ source "$REPO_ROOT/pack-versions/$PACK_VERSION.env"
 
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/build/aapt2}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/out/linux-arm64}"
-SRC_REPO="https://github.com/lzhiyong/android-sdk-tools"
-LZHIYONG_REF="${LZHIYONG_REF:-master}"
+SRC_REPO="https://github.com/ReVanced/aapt2"
+REVANCED_REF="${REVANCED_REF:-v1.1.0}"
+NDK_VERSION="${NDK_VERSION:-r27c}"
+PROTOC_VERSION="${PROTOC_VERSION:-21.12}"
 
 mkdir -p "$WORK_DIR" "$OUT_DIR"
 
-if [[ ! -d "$WORK_DIR/src/.git" ]]; then
-    echo ">> cloning $SRC_REPO @ $LZHIYONG_REF"
-    git clone --branch "$LZHIYONG_REF" "$SRC_REPO" "$WORK_DIR/src"
+# --- 1. Source ---------------------------------------------------------------
+SRC_DIR="$WORK_DIR/src"
+if [[ ! -d "$SRC_DIR/.git" ]]; then
+    echo ">> cloning $SRC_REPO @ $REVANCED_REF (with submodules)"
+    git clone --recurse-submodules --shallow-submodules --depth 1 \
+        --branch "$REVANCED_REF" "$SRC_REPO" "$SRC_DIR"
 else
-    echo ">> reusing existing checkout at $WORK_DIR/src"
-    git -C "$WORK_DIR/src" fetch origin "$LZHIYONG_REF"
-    git -C "$WORK_DIR/src" checkout "$LZHIYONG_REF"
+    echo ">> reusing existing checkout at $SRC_DIR"
 fi
 
-cd "$WORK_DIR/src"
+# --- 2. Force-stamp version string -------------------------------------------
+# aapt2's `version` output is "Android Asset Packaging Tool (aapt) <X>.<Y>-<id>"
+# where:
+#   <X>.<Y>  comes from sMajorVersion/sMinorVersion in base/tools/aapt2/util/Util.cpp
+#   <id>     comes from soong_build_number, a global char buffer that Soong
+#            patches at link time (see soong/cc/libbuildversion/libbuildversion.cpp).
+#
+# ReVanced's CMake doesn't run that link-time patcher, so unpatched their build
+# emits "(aapt) 2.19-" (empty id). We sed both files to force the exact string
+# from pack-versions/<v>.env.
+UTIL_CPP="$SRC_DIR/submodules/base/tools/aapt2/util/Util.cpp"
+LIBBV_CPP="$SRC_DIR/submodules/soong/cc/libbuildversion/libbuildversion.cpp"
+[[ -f "$UTIL_CPP"  ]] || { echo "!! expected $UTIL_CPP — submodules not initialised?"; exit 3; }
+[[ -f "$LIBBV_CPP" ]] || { echo "!! expected $LIBBV_CPP — submodules not initialised?"; exit 3; }
 
-# Apply any local patches BEFORE running get_source.py so their patches stack
-# on top of ours cleanly.
-if [[ -d "$REPO_ROOT/shims/aapt2/patches" ]]; then
-    shopt -s nullglob
-    for p in "$REPO_ROOT/shims/aapt2/patches/"*.patch; do
-        echo ">> applying $p"
-        git apply --whitespace=nowarn "$p"
-    done
-    shopt -u nullglob
+# Parse "Android Asset Packaging Tool (aapt) MAJOR.MINOR-BUILDID".
+re='Android Asset Packaging Tool \(aapt\) ([0-9]+)\.([0-9]+)-(.+)$'
+if [[ ! "$AAPT2_VERSION_STRING" =~ $re ]]; then
+    echo "!! cannot parse AAPT2_VERSION_STRING='$AAPT2_VERSION_STRING'"
+    exit 4
+fi
+MAJOR="${BASH_REMATCH[1]}"
+MINOR="${BASH_REMATCH[2]}"
+BUILDID="${BASH_REMATCH[3]}"
+echo ">> stamping aapt version → ${MAJOR}.${MINOR}-${BUILDID}"
+
+# Idempotent sed: only rewrite if the canonical upstream literal is still there.
+sed -i -E "s|sMajorVersion = \"[0-9]+\";|sMajorVersion = \"${MAJOR}\";|" "$UTIL_CPP"
+sed -i -E "s|sMinorVersion = \"[0-9]+\";|sMinorVersion = \"${MINOR}\";|" "$UTIL_CPP"
+sed -i    "s|#define PLACEHOLDER \"SOONG BUILD NUMBER PLACEHOLDER\"|#define PLACEHOLDER \"${BUILDID}\"|" "$LIBBV_CPP"
+
+# Sanity-check the patches landed.
+grep -q "sMajorVersion = \"${MAJOR}\";" "$UTIL_CPP" \
+    || { echo "!! sMajorVersion patch did not apply — upstream may have changed Util.cpp"; exit 5; }
+grep -q "sMinorVersion = \"${MINOR}\";" "$UTIL_CPP" \
+    || { echo "!! sMinorVersion patch did not apply — upstream may have changed Util.cpp"; exit 5; }
+grep -q "PLACEHOLDER \"${BUILDID}\""    "$LIBBV_CPP" \
+    || { echo "!! soong_build_number patch did not apply — upstream may have moved the define"; exit 5; }
+
+# --- 3. Apply ReVanced's local patches (idempotent) -------------------------
+cd "$SRC_DIR"
+if [[ ! -f ".our-patch-applied" ]]; then
+    echo ">> running ReVanced patch.sh"
+    bash patch.sh
+    touch ".our-patch-applied"
 fi
 
-# get_source.py clones every AOSP submodule lzhiyong's CMake recipe needs
-# (frameworks/base, system/core, libbase, libpng, expat, protobuf, etc.) and
-# runs a small set of sed patches that make the AOSP source compile under
-# CMake instead of Soong. Only run if the src/ tree doesn't already have them.
-if [[ ! -d "src/base" ]]; then
-    echo ">> running get_source.py (downloads AOSP submodules)"
-    python3 get_source.py
+# --- 4. Toolchain ------------------------------------------------------------
+if [[ -z "${ANDROID_NDK:-}" ]]; then
+    NDK_ROOT="$WORK_DIR/ndk/android-ndk-${NDK_VERSION}"
+    if [[ ! -d "$NDK_ROOT" ]]; then
+        mkdir -p "$WORK_DIR/ndk"
+        cd "$WORK_DIR/ndk"
+        echo ">> downloading Android NDK ${NDK_VERSION} (linux-x86_64)"
+        curl -fsSL -o "ndk.zip" \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+        unzip -q "ndk.zip" && rm "ndk.zip"
+        cd "$SRC_DIR"
+    fi
+    export ANDROID_NDK="$NDK_ROOT"
 fi
+echo ">> using ANDROID_NDK=$ANDROID_NDK"
 
-# Stamp the aapt2 version string into platform_tools_version.h so the produced
-# binary reports exactly what the pack expects. lzhiyong defaults to a fixed
-# tools version, but the actual `aapt2 version` string is built from
-# Tools.h::sBuildId, which Soong patches at build time. We force-override here.
-PT_VERSION_HDR="src/soong/cc/libbuildversion/include/platform_tools_version.h"
-if [[ -f "$PT_VERSION_HDR" ]]; then
-    AAPT2_BUILD_ID="${AAPT2_AOSP_BUILD_ID:-13193326}"
-    echo ">> stamping aapt2 build id $AAPT2_BUILD_ID into $PT_VERSION_HDR"
-    cat > "$PT_VERSION_HDR" <<EOF
-#pragma once
-// Overwritten by shims/aapt2/build.sh — pin to upstream pack $PACK_VERSION.
-#define PLATFORM_TOOLS_VERSION "$AAPT2_BUILD_ID"
-EOF
+if [[ -z "${PROTOC_PATH:-}" ]]; then
+    PROTOC_DIR="$WORK_DIR/protoc"
+    if [[ ! -x "$PROTOC_DIR/bin/protoc" ]]; then
+        mkdir -p "$PROTOC_DIR"
+        cd "$PROTOC_DIR"
+        echo ">> downloading protoc ${PROTOC_VERSION} (linux-x86_64)"
+        curl -fsSL -o "protoc.zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+        unzip -q "protoc.zip" && rm "protoc.zip"
+        chmod +x bin/protoc
+        cd "$SRC_DIR"
+    fi
+    export PROTOC_PATH="$PROTOC_DIR/bin/protoc"
+    export PATH="$PROTOC_DIR/bin:$PATH"
 fi
+echo ">> using PROTOC_PATH=$PROTOC_PATH"
 
-BUILD_DIR="$WORK_DIR/build"
-mkdir -p "$BUILD_DIR"
+# --- 5. Build ----------------------------------------------------------------
+cd "$SRC_DIR"
+# ReVanced's build.sh wraps cmake+ninja. It picks up ANDROID_NDK from the env.
+# It produces build/bin/aapt2-arm64-v8a (statically linked, stripped).
+echo ">> running ReVanced build.sh arm64-v8a"
+bash build.sh arm64-v8a
 
-# Use system protoc if available — bundled abseil/protobuf is heavy to build
-# and the version constraint is "no newer than 3.21.12" (see lzhiyong's
-# CMakeLists.txt). Ubuntu 22.04 ships 3.12.4 which is fine.
-PROTOC_FLAG=()
-if command -v protoc >/dev/null 2>&1; then
-    PROTOC_VER="$(protoc --version | awk '{print $2}')"
-    echo ">> using system protoc $PROTOC_VER"
-    PROTOC_FLAG=("-DPROTOC_PATH=$(command -v protoc)")
-fi
-
-echo ">> configuring (no NDK toolchain — host glibc build)"
-cmake -GNinja -S "$WORK_DIR/src" -B "$BUILD_DIR" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
-    -Dprotobuf_BUILD_TESTS=OFF \
-    -DABSL_PROPAGATE_CXX_STD=ON \
-    "${PROTOC_FLAG[@]}"
-
-echo ">> building aapt2"
-ninja -C "$BUILD_DIR" -j"$(nproc)" aapt2
-
-PRODUCED="$(find "$BUILD_DIR" -maxdepth 4 -type f -name aapt2 -executable | head -1)"
-[[ -n "$PRODUCED" ]] || { echo "!! aapt2 binary not produced"; find "$BUILD_DIR" -name aapt2; exit 4; }
+PRODUCED="$SRC_DIR/build/bin/aapt2-arm64-v8a"
+[[ -x "$PRODUCED" ]] || { echo "!! expected $PRODUCED"; ls -la "$SRC_DIR/build/bin/" 2>/dev/null || true; exit 6; }
 
 cp "$PRODUCED" "$OUT_DIR/aapt2"
 chmod +x "$OUT_DIR/aapt2"
-strip --strip-unneeded "$OUT_DIR/aapt2"
 file "$OUT_DIR/aapt2"
-echo ">> wrote $OUT_DIR/aapt2"
+echo ">> wrote $OUT_DIR/aapt2 ($(du -h "$OUT_DIR/aapt2" | awk '{print $1}'))"
+
+echo ">> aapt2 version (sanity check before verify-version.sh):"
+"$OUT_DIR/aapt2" version

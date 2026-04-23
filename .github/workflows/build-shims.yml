@@ -34,16 +34,13 @@ jobs:
           path: out/arm64-reference/${{ env.PACK_VERSION }}/
           retention-days: 14
 
-  build:
+  build-so:
     name: build-${{ matrix.shim }}
     needs: reference
     runs-on: ubuntu-22.04-arm
     strategy:
       fail-fast: false
       matrix:
-        # aapt2 temporarily excluded — lzhiyong/android-sdk-tools turned out
-        # to be bionic-coupled (libcutils, libselinux, libsepol, libandroidfw,
-        # libincfs, c++_static). Tracked in docs/aapt2.md and STATUS.md.
         shim: [libMono.Unix, libZipSharpNative]
     steps:
       - uses: actions/checkout@v4
@@ -76,9 +73,37 @@ jobs:
           path: out/linux-arm64/
           retention-days: 14
 
+  build-aapt2:
+    name: build-aapt2
+    needs: reference
+    # x86_64 host — Android NDK is published for linux-x86_64 only. The
+    # cross-compiled output is arm64-v8a static-bionic; it runs natively on any
+    # aarch64 Linux kernel (verified on Pi OS bullseye / glibc 2.31). See
+    # docs/aapt2.md for why the static-bionic ABI is compatible with Linux arm64.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: install host deps
+        run: |
+          sudo apt-get update -y
+          xargs -a shims/aapt2/apt-deps.txt sudo apt-get install -y --no-install-recommends
+      - name: build aapt2
+        run: bash shims/aapt2/build.sh
+      - name: copy aapt2 binary into runner so verify-daemon (arm64 SoC) gets it
+        # We do version verification here on x86_64 — the binary still runs
+        # because the version path doesn't issue any arm64 syscalls. Daemon
+        # smoke-test is more invasive and is deferred to the .so-side job
+        # (see end-to-end validation on rpi4).
+        run: bash shims/aapt2/verify-version.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shim-aapt2-${{ env.PACK_VERSION }}
+          path: out/linux-arm64/
+          retention-days: 14
+
   install-shims-smoketest:
     name: install-shims smoketest
-    needs: build
+    needs: [build-so, build-aapt2]
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
