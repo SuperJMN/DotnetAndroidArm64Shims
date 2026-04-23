@@ -119,6 +119,7 @@ resolve_alias() {
     # for a flat string→string map and avoids requiring jq on the host.
     # Escape regex metachars in the version (dots, plus, dash, etc).
     local escaped
+    # shellcheck disable=SC2016  # single-quoted sed script is intentional; \& is sed backref, not a shell expansion
     escaped="$(printf '%s' "$version" | sed 's/[.[\*^$()+?{|]/\\&/g')"
     printf '%s' "$MANIFEST_CACHE" \
         | grep -oE "\"$escaped\"[[:space:]]*:[[:space:]]*\"[^\"]+\"" \
