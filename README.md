@@ -38,7 +38,7 @@ Everything else under the pack is already shipped as aarch64 (`tools/lib/arm64-v
 ## Strategy
 
 1. Build the shim binaries for `linux-arm64` in CI on every relevant `Microsoft.Android.Sdk.Linux` upstream release.
-2. Publish them as **GitHub releases**, one tag per upstream pack version (e.g. `36.1.53`, `35.0.105`).
+2. Publish them as **GitHub releases**, one tag per *binary fingerprint* (not per pack version — see [coverage model](#coverage-model-one-release-many-pack-versions) below).
 3. Provide a small bootstrap script + documented CLI to overlay them onto an installed pack:
    ```
    ~/.dotnet/packs/Microsoft.Android.Sdk.Linux/<version>/tools/Linux/aapt2
@@ -47,15 +47,32 @@ Everything else under the pack is already shipped as aarch64 (`tools/lib/arm64-v
    ```
 4. Downstream consumers (e.g. [DotnetDeployer](https://github.com/SuperJMN/DotnetDeployer)) call the bootstrap before invoking `dotnet publish`.
 
+## Coverage model: one release, many pack versions
+
+Microsoft re-publishes the workload pack often, but the *host binaries* inside it almost never change. Across every `Microsoft.Android.Sdk.Linux` version we sha256-fingerprinted (15 versions in the 35.0.x and 36.1.x series, including 36.99 previews), only **two distinct host-binary fingerprints** exist:
+
+| Series | aapt2 sha256 | aapt2 version | libMono.Unix.so | libZipSharpNative |
+|---|---|---|---|---|
+| All 35.0.x | `d1096e…` | 2.19-11948202 | `ce99f5…` | `cb52cc…` |
+| All 36.x (incl. previews) | `1a6a39…` | 2.20-13193326 | `ce99f5…` | `cb52cc…` |
+
+Both `.so` files are **byte-identical for every version checked** — `aapt2` changed exactly once between the 35.x and 36.x series.
+
+So we maintain a [`compatibility.json`](compatibility.json) manifest at the repo root: a sha256-anchored map from pack version → shim release tag whose tarball ships byte-identical replacements. [`scripts/install-shims.sh`](scripts/install-shims.sh) tries the literal pack-version tag first; on a miss it consults the manifest. A single `35.0.105` release covers the entire 35.0.x series; a single `36.1.53` release covers the entire 36.x series (so far).
+
+A weekly [NuGet watcher workflow](.github/workflows/watch-nuget.yml) keeps the manifest current automatically — see the [Maintenance runbook](docs/maintenance.md).
+
 ## Test platform
 
 A Raspberry Pi 4 (4 GB, Raspberry Pi OS 64-bit, kernel 6.x, .NET SDK 10.0.202) hosting a [DotnetFleet](https://github.com/SuperJMN/DotnetFleet) worker. Real-world canary project: [Pokémon-Battle-Engine](https://github.com/SuperJMN/Pokemon) — Avalonia app with a `net10.0-android` head producing arm64-v8a APK + AAB.
 
 If the shimmed pack can produce a signed, installable APK from this canary on the Pi, we ship.
 
-## Maintenance burden (be honest)
+## Maintenance burden
 
-`aapt2` enforces a strict version match against the pack (`error XA0111: Unsupported version of AAPT2`). Microsoft ships a new pack roughly every month, sometimes more. **Each upstream version requires rebuilding and tagging a matching shim release.** This is the price of admission until upstream provides arm64 hosts.
+`aapt2` enforces a strict version match against the pack (`error XA0111: Unsupported version of AAPT2`). The good news: empirically Microsoft only bumps the `aapt2` version string when AOSP cuts a new build-tools snapshot — roughly once a year — and ships dozens of pack versions in between with the same host binaries. The [coverage model above](#coverage-model-one-release-many-pack-versions) means most new pack releases are picked up automatically by the watcher with **zero rebuilds**.
+
+When a real binary bump *does* happen, the watcher opens an actionable issue with the new sha256s and a one-click `release.yml` dispatch link. End-to-end procedure: see the [Maintenance runbook](docs/maintenance.md).
 
 If/when [dotnet/android#11184](https://github.com/dotnet/android/issues/11184) is resolved, archive this repo.
 
@@ -65,6 +82,7 @@ If/when [dotnet/android#11184](https://github.com/dotnet/android/issues/11184) i
 - [`docs/libMono.Unix.md`](docs/libMono.Unix.md)
 - [`docs/libZipSharpNative.md`](docs/libZipSharpNative.md)
 - [`docs/llvm-toolchain.md`](docs/llvm-toolchain.md) (deferred)
+- [`docs/maintenance.md`](docs/maintenance.md) — runbook for new pack versions, drift, and binary bumps
 - [`STATUS.md`](STATUS.md) — roadmap and current state
 
 ## License

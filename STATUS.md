@@ -50,7 +50,7 @@ Order matters: the two `.so` shims are dependencies of MSBuild tasks that run be
 
 - [x] **sha256-anchored compatibility manifest** (`compatibility.json`): a single shim release covers an entire pack subseries. Verified empirically — across all 35.0.x and 36.1.x pack versions (15 checked, including 36.1.99 and 36.99 previews), only 2 distinct host-binary fingerprints exist. Both `.so` files are byte-identical for *every* version; `aapt2` changed exactly once (35.x→36.x). `install-shims.sh` consults the manifest as a fallback when no release exists at the literal pack-version tag.
 - [x] **CI watcher** (`.github/workflows/watch-nuget.yml`): weekly cron polls the NuGet feed; for each new pack version, sha256-fingerprints the three host binaries; opens an auto-mergeable PR if all three sha256s match an existing release's anchors (zero-rebuild expansion), or an actionable issue with the drifted sha256s and a one-click `release.yml` dispatch link otherwise.
-- [ ] Document the bump procedure end-to-end so it's a 30-minute task, not a half-day archaeology session. (Largely automated by the watcher, but the new-aapt2-version case still needs a written runbook.)
+- [x] **Bump runbook** (`docs/maintenance.md`): scenario-driven recipe for each kind of upstream change (aapt2 string bump, libzip soname bump, Mono.Posix symbol surface change, new host binary, new pack series). Linked from README under "Maintenance burden". Happy-path procedure is "merge the auto-PR".
 
 ## Out of scope (for now)
 
