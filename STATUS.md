@@ -21,15 +21,15 @@ Order matters: the two `.so` shims are dependencies of MSBuild tasks that run be
 - [x] **`libZipSharpNative-3-3.so` for linux-arm64.** Build script at `shims/libZipSharpNative/build.sh` delegates to upstream `dotnet/android-libzipsharp`'s own `build.sh` (two-phase CMake: `-DBUILD_DEPENDENCIES=ON` then `-DBUILD_LIBZIP=ON`). Soname suffix `-3-3` pinned in `pack-versions/36.1.53.env`.
 - [x] CI: GitHub Actions matrix on `ubuntu-22.04-arm` at `.github/workflows/build-shims.yml`.
 
-## Phase 2 — aapt2 (in progress) 🔧
+## Phase 2 — aapt2 (done) ✅
 
 **Strategy: Option F — ReVanced/aapt2 cross-compiled via Android NDK r27c, version-stamped via sed.** Produces a static-bionic arm64-v8a binary that runs natively on Linux arm64. See [`docs/aapt2.md`](docs/aapt2.md) for the full rationale and why Options A–E were abandoned.
 
 - [x] **Discovery: static-bionic arm64-v8a binaries run on Linux arm64 + glibc.** Validated empirically on Pi OS bullseye with ReVanced's stock `aapt2-arm64-v8a` from `v1.1.0` — `aapt2 version` exits 0.
-- [x] **Build script `shims/aapt2/build.sh`** clones ReVanced/aapt2 v1.1.0, sed-patches `Util.cpp` (`sMinorVersion`) + `libbuildversion.cpp` (`PLACEHOLDER` macro) to force the exact `AAPT2_VERSION_STRING` from `pack-versions/<v>.env`, downloads NDK r27c + protoc 21.12 if not in env, runs ReVanced's `patch.sh` + `build.sh arm64-v8a`. Idempotent.
+- [x] **Build script `shims/aapt2/build.sh`** clones ReVanced/aapt2 v1.1.0, sed-patches `Util.cpp` (`sMinorVersion`) + `libbuildversion.cpp` (`soong_build_number[128]` initializer) to force the exact `AAPT2_VERSION_STRING` from `pack-versions/<v>.env`, downloads NDK r27c + protoc 21.12 if not in env, runs ReVanced's `patch.sh` + `build.sh arm64-v8a`. Idempotent.
 - [x] CI workflows split: aapt2 builds on `ubuntu-22.04` (x86_64 — NDK is x86_64-only) in a separate `build-aapt2` job, the `.so` shims continue on `ubuntu-22.04-arm` inside debian:11. Both feed the release packaging step.
 - [x] `verify-version.sh` and `verify-daemon.sh` re-enabled in CI via `verify-symbols.sh` wrapper (uniform CI invocation across shims).
-- [ ] Tag a release including aapt2, validate end-to-end on Pi: native arm64 aapt2 should noticeably speed up `dotnet publish` vs the qemu-x86_64 fallback path.
+- [x] Release `36.1.53` republished including native arm64 aapt2; validated end-to-end on Pi 4 (8 GB): `dotnet publish -c Release -f net10.0-android` of vanilla canary completes in **3m40s** (vs ~4 min with qemu-x86_64 fallback), produces signed APK, installs and launches successfully on Pixel device.
 
 ## Phase 3 — Distribution + integration (in progress)
 
