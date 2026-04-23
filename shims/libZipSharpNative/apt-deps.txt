@@ -6,3 +6,4 @@ pkg-config
 autoconf
 automake
 libtool
+file

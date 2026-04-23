@@ -3,3 +3,4 @@ git
 cmake
 ninja-build
 pkg-config
+file
