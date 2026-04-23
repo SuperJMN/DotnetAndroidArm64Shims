@@ -35,12 +35,12 @@ Order matters: the two `.so` shims are dependencies of MSBuild tasks that run be
 - [x] **Bootstrap script: `scripts/install-shims.sh`** (zero deps beyond `bash`/`curl`/`tar`/`sha256sum`). Auto-detects installed pack versions, downloads matching release, verifies `SHA256SUMS`, backs up originals to `tools/.x86_64-backup/` (and `tools/Linux/.x86_64-backup/` for `aapt2`), idempotent on re-run. CI smoke test in `build-shims.yml` exercises the full overlay against a fake pack tree.
 - [ ] Integrate from [DotnetDeployer](https://github.com/SuperJMN/DotnetDeployer): when `RuntimeInformation.OSArchitecture == Arm64 && IsLinux`, before `dotnet publish` for an Android project, invoke `install-shims.sh`. (Out of scope of this repo — happens in DotnetDeployer.)
 
-## Phase 4 — Validation on rpi4 (in progress)
+## Phase 4 — Validation on rpi4 (done) ✅
 
 - [x] Run shim install on the rpi4 worker. ✅ (Pi OS bullseye, glibc 2.31, dotnet SDK 10.0.202, pack 36.1.53.)
 - [x] Build a vanilla `dotnet new android` template via `dotnet publish -c Release -f net10.0-android`. ✅ Produces signed APK + AAB. **~4 min** end-to-end on Pi 4 (8 GB) — the .so shims load cleanly; aapt2 still runs via qemu-x86_64 (binfmt_misc) until Phase 2 lands a native one.
-- [ ] Trigger DotnetDeployer for the [Pokémon-Battle-Engine](https://github.com/SuperJMN/Pokemon) repo from the Fleet UI.
-- [ ] Verify the produced APK installs and launches on a physical Android device.
+- [x] **Install + launch the APK on a real Android device.** ✅ Pixel device, cold start 234 ms, no FATAL/AndroidRuntime errors, `Hello, Android!` rendered. Activity displayed via `ActivityTaskManager: Displayed com.companyname.CanaryApp/...MainActivity: +234ms`.
+- [ ] Trigger DotnetDeployer for the [Pokémon-Battle-Engine](https://github.com/SuperJMN/Pokemon) repo from the Fleet UI. (Out of scope — DotnetDeployer integration.)
 
 > **glibc baseline**: shims are now built inside `debian:11` (glibc 2.31) so they load on Pi OS bullseye. Building on the bare `ubuntu-22.04-arm` runner produced binaries depending on `GLIBC_2.33` (versioned `stat`/`fstat`/`lstat`/`mknod`), which fails to load on bullseye. Fixed in commit `56263e4`.
 
