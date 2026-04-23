@@ -1,8 +1,3 @@
-# Host-side packages for aapt2 build (Option F: NDK cross-compile to arm64-v8a
-# static-bionic). The NDK provides clang, sysroot, and most build deps; we just
-# need a minimal CMake + Ninja + git + curl/unzip toolchain on the host.
-#
-# Host MUST be linux-x86_64 because the Android NDK is published x86_64-only.
 build-essential
 cmake
 ninja-build
