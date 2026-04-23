@@ -47,19 +47,29 @@ jobs:
         shim: [libMono.Unix, libZipSharpNative]
     steps:
       - uses: actions/checkout@v4
-      - name: install apt deps
-        run: |
-          sudo apt-get update -y
-          xargs -a "shims/${{ matrix.shim }}/apt-deps.txt" sudo apt-get install -y
       - name: download upstream reference
         uses: actions/download-artifact@v4
         with:
           name: arm64-reference-${{ env.PACK_VERSION }}
           path: out/arm64-reference/${{ env.PACK_VERSION }}/
-      - name: build
-        run: bash "shims/${{ matrix.shim }}/build.sh"
-      - name: verify (symbols)
-        run: bash "shims/${{ matrix.shim }}/verify-symbols.sh"
+      - name: build inside debian:11 (glibc 2.31 baseline for Pi OS bullseye)
+        # Building on the bare ubuntu-22.04-arm runner produces .so libs that
+        # need GLIBC_2.33 (stat/fstat/lstat/mknod versioning), which fails on
+        # Raspberry Pi OS bullseye with "version `GLIBC_2.33' not found".
+        # Building inside debian:11 yields binaries linked against glibc 2.31,
+        # which is forward-compatible to bookworm and any newer distro.
+        run: |
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            -e PACK_VERSION="$PACK_VERSION" \
+            debian:11 bash -c '
+              set -euo pipefail
+              apt-get update -y
+              apt-get install -y --no-install-recommends ca-certificates curl
+              xargs -a "shims/${{ matrix.shim }}/apt-deps.txt" apt-get install -y --no-install-recommends
+              bash "shims/${{ matrix.shim }}/build.sh"
+              bash "shims/${{ matrix.shim }}/verify-symbols.sh"
+            '
       - uses: actions/upload-artifact@v4
         with:
           name: shim-${{ matrix.shim }}-${{ env.PACK_VERSION }}

@@ -20,23 +20,27 @@ jobs:
       PACK_VERSION: ${{ github.event.inputs.pack_version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      - name: install build deps (union of all shims)
+      - name: extract upstream reference
         run: |
           sudo apt-get update -y
-          sort -u shims/*/apt-deps.txt | xargs sudo apt-get install -y
+          sudo apt-get install -y curl unzip binutils
+          bash scripts/extract-reference-symbols.sh
 
-      - name: extract upstream reference
-        run: bash scripts/extract-reference-symbols.sh
-
-      - name: build libMono.Unix
-        run: bash shims/libMono.Unix/build.sh
-      - name: verify libMono.Unix
-        run: bash shims/libMono.Unix/verify-symbols.sh
-
-      - name: build libZipSharpNative
-        run: bash shims/libZipSharpNative/build.sh
-      - name: verify libZipSharpNative
-        run: bash shims/libZipSharpNative/verify-symbols.sh
+      - name: build shims inside debian:11 (glibc 2.31 baseline)
+        run: |
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            -e PACK_VERSION="$PACK_VERSION" \
+            debian:11 bash -c '
+              set -euo pipefail
+              apt-get update -y
+              apt-get install -y --no-install-recommends ca-certificates curl
+              sort -u shims/*/apt-deps.txt | xargs apt-get install -y --no-install-recommends
+              bash shims/libMono.Unix/build.sh
+              bash shims/libMono.Unix/verify-symbols.sh
+              bash shims/libZipSharpNative/build.sh
+              bash shims/libZipSharpNative/verify-symbols.sh
+            '
 
       # aapt2 deferred for v1 — see docs/aapt2.md and STATUS.md.
 
