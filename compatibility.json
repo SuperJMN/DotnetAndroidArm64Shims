@@ -13,12 +13,16 @@
     "fallback when no release exists at that exact tag.",
     "",
     "An entry is added here when the watcher (.github/workflows/watch-nuget.yml)",
-    "verifies that the new pack version's three host binaries (aapt2, libMono.Unix.so,",
-    "libZipSharpNative-3-3.so) are byte-identical to those in an existing shim",
-    "release. If any sha256 drifts, the watcher opens an issue requesting a new",
-    "release build."
+    "verifies that the new pack version's host binaries (aapt2, libMono.Unix.so,",
+    "libZipSharpNative-3-3.so, and the 6 binutils/bin/ entries) are byte-identical",
+    "to those in an existing shim release. If any sha256 drifts, the watcher opens",
+    "an issue requesting a new release build (or, for binutils drift, a manual",
+    "review of the LLVM mapping under .binutils below).",
+    "",
+    "The .binutils block describes the host-installed Phase 6 toolchain mapping",
+    "consumed by install-shims.sh. See docs/llvm-toolchain.md for rationale."
   ],
-  "schema": 1,
+  "schema": 2,
   "aliases": {
     "35.0.7": "35.0.105",
     "35.0.24": "35.0.105",
@@ -41,12 +45,62 @@
     "35.0.105": {
       "tools/Linux/aapt2": "d1096e11aba9c974644369ee3c50d239acac3f3428ffa928e5b9c14dfb7a57de",
       "tools/libMono.Unix.so": "ce99f51103806110793e8ac8f24a9218589ad59d7cfdcf41a999bf6835f406b5",
-      "tools/libZipSharpNative-3-3.so": "cb52ccf5bf5fead6a080f597127a3ebe90aa1e7a8e7573aa51b119034305fcfb"
+      "tools/libZipSharpNative-3-3.so": "cb52ccf5bf5fead6a080f597127a3ebe90aa1e7a8e7573aa51b119034305fcfb",
+      "tools/Linux/binutils/bin/as": "7a319f4fc1179b9b9a5ffe1f1f7e0343aa6a68a10c24ab9554588a34b99b17ef",
+      "tools/Linux/binutils/bin/ld": "836e48d2751ff08d65416a06b7b8f4649385c2e1a841b53afb8df52955a0e1cf",
+      "tools/Linux/binutils/bin/llc": "1710f12f985879d6fc932ea4977e5566c60a09da93f214b413f76e490302a943",
+      "tools/Linux/binutils/bin/llvm-mc": "a80c8fbffbdfd678dba56fc11d97c4347efbb5b7995a93af23111154cba268b8",
+      "tools/Linux/binutils/bin/llvm-objcopy": "daccf40b955e7884d8c5b7417ecfe58ea89390e9c0046eee366a8c88271fa1ed",
+      "tools/Linux/binutils/bin/llvm-strip": "daccf40b955e7884d8c5b7417ecfe58ea89390e9c0046eee366a8c88271fa1ed"
     },
     "36.1.53": {
       "tools/Linux/aapt2": "1a6a396b9cd071f7040071fdd108718cb98c3c9f4960044f373b288993d19eb7",
       "tools/libMono.Unix.so": "ce99f51103806110793e8ac8f24a9218589ad59d7cfdcf41a999bf6835f406b5",
-      "tools/libZipSharpNative-3-3.so": "cb52ccf5bf5fead6a080f597127a3ebe90aa1e7a8e7573aa51b119034305fcfb"
+      "tools/libZipSharpNative-3-3.so": "cb52ccf5bf5fead6a080f597127a3ebe90aa1e7a8e7573aa51b119034305fcfb",
+      "tools/Linux/binutils/bin/as": "7a319f4fc1179b9b9a5ffe1f1f7e0343aa6a68a10c24ab9554588a34b99b17ef",
+      "tools/Linux/binutils/bin/ld": "836e48d2751ff08d65416a06b7b8f4649385c2e1a841b53afb8df52955a0e1cf",
+      "tools/Linux/binutils/bin/llc": "1710f12f985879d6fc932ea4977e5566c60a09da93f214b413f76e490302a943",
+      "tools/Linux/binutils/bin/llvm-mc": "a80c8fbffbdfd678dba56fc11d97c4347efbb5b7995a93af23111154cba268b8",
+      "tools/Linux/binutils/bin/llvm-objcopy": "daccf40b955e7884d8c5b7417ecfe58ea89390e9c0046eee366a8c88271fa1ed",
+      "tools/Linux/binutils/bin/llvm-strip": "daccf40b955e7884d8c5b7417ecfe58ea89390e9c0046eee366a8c88271fa1ed"
+    }
+  },
+  "binutils": {
+    "$comment": [
+      "Host-installed Phase 6 toolchain mapping consumed by install-shims.sh.",
+      "",
+      "Strategy: instead of bundling ~50 MB of aarch64 LLVM/binutils binaries in",
+      "the release tarball, install-shims.sh symlinks the 6 x86_64 entries in",
+      "<pack>/tools/Linux/binutils/bin/ to host-installed equivalents. The user",
+      "is expected to provide LLVM via apt (one-liner documented below).",
+      "",
+      "Minimum LLVM major: 15 — the .NET Android SDK 36.x emits LLVM IR with",
+      "opaque pointers (`ptr`), introduced in LLVM 15. Bullseye-stock LLVM 11",
+      "fails. Validated working: LLVM 19.1.7 from apt.llvm.org/bullseye.",
+      "",
+      "preferred_llvm_majors is consulted in order; first hit wins. To pin a",
+      "specific LLVM major on a host, point install-shims.sh at it explicitly",
+      "via --llvm-major.",
+      "",
+      "host_install_recipe is the apt one-liner the install script prints when",
+      "no acceptable LLVM is found on the host. {codename} is substituted at",
+      "runtime from `lsb_release -cs`."
+    ],
+    "preferred_llvm_majors": [19, 18, 17, 16, 15],
+    "host_install_recipe": [
+      "wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/apt.llvm.org.gpg",
+      "echo 'deb http://apt.llvm.org/{codename}/ llvm-toolchain-{codename}-19 main' | sudo tee /etc/apt/sources.list.d/llvm-19.list",
+      "sudo apt-get update",
+      "sudo apt-get install -y llvm-19 lld-19 binutils"
+    ],
+    "mapping": {
+      "$comment": "Pack-relative path → host-path template. {llvm} is replaced with the detected LLVM major.",
+      "tools/Linux/binutils/bin/as":           "/usr/bin/as",
+      "tools/Linux/binutils/bin/ld":           "/usr/lib/llvm-{llvm}/bin/ld.lld",
+      "tools/Linux/binutils/bin/llc":          "/usr/lib/llvm-{llvm}/bin/llc",
+      "tools/Linux/binutils/bin/llvm-mc":      "/usr/lib/llvm-{llvm}/bin/llvm-mc",
+      "tools/Linux/binutils/bin/llvm-objcopy": "/usr/lib/llvm-{llvm}/bin/llvm-objcopy",
+      "tools/Linux/binutils/bin/llvm-strip":   "/usr/lib/llvm-{llvm}/bin/llvm-strip"
     }
   }
 }

@@ -1,0 +1,120 @@
+name: aot-smoke
+
+# End-to-end Phase 6 smoke: prove that with this repo's shim install + a
+# host-installed LLVM 19, a real `dotnet publish -c Release -f net*-android
+# -r android-arm64` with RunAOTCompilation=true succeeds on aarch64 Linux.
+#
+# Why a separate workflow:
+#   * The .NET android workload install is heavy (~1 GB, ~10 min) and the
+#     publish itself is another ~10 min; we don't want this on every PR.
+#   * The job is allowed to flake (continue-on-error) for now — its purpose
+#     is signal, not gating. If it goes red we open an issue and triage.
+#   * Pinning to ubuntu-22.04-arm guarantees we exercise the same aarch64
+#     code path the rpi4 production worker hits.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      pack_version:
+        description: "Microsoft.Android.Sdk.Linux pack version to AOT-publish against"
+        default: "36.1.53"
+      llvm_major:
+        description: "Host LLVM major to install and pin (>=15)"
+        default: "19"
+
+permissions:
+  contents: read
+
+env:
+  PACK_VERSION: ${{ github.event.inputs.pack_version || '36.1.53' }}
+  LLVM_MAJOR: ${{ github.event.inputs.llvm_major || '19' }}
+
+jobs:
+  aot-publish:
+    name: dotnet publish AOT android-arm64
+    runs-on: ubuntu-22.04-arm
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install host deps + LLVM ${{ env.LLVM_MAJOR }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            curl unzip wget gnupg ca-certificates binutils zip
+          codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/apt.llvm.org.gpg
+          echo "deb http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-${LLVM_MAJOR} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-${LLVM_MAJOR}.list
+          sudo apt-get update -y
+          sudo apt-get install -y "llvm-${LLVM_MAJOR}" "lld-${LLVM_MAJOR}"
+          test -x "/usr/lib/llvm-${LLVM_MAJOR}/bin/llc"
+          test -x "/usr/lib/llvm-${LLVM_MAJOR}/bin/ld.lld"
+
+      - name: install .NET 10 + android workload
+        run: |
+          set -euo pipefail
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+          bash /tmp/dotnet-install.sh --channel 10.0 --quality preview
+          export PATH="$HOME/.dotnet:$PATH"
+          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
+          dotnet --info
+          # workload install is the slowest step (~10 min) — accept the cost,
+          # we only run weekly.
+          dotnet workload install android
+
+      - name: install shims (.so + aapt2 + binutils overlay)
+        run: |
+          set -euo pipefail
+          sdk_root="$HOME/.dotnet/packs/Microsoft.Android.Sdk.Linux"
+          ls "$sdk_root"
+          PACK_ROOT="$sdk_root" \
+            bash scripts/install-shims.sh --version "${PACK_VERSION}" --llvm-major "${LLVM_MAJOR}"
+          # sanity: every binutils entry must be a symlink under the SDK pack
+          for b in as ld llc llvm-mc llvm-objcopy llvm-strip; do
+            target="$(readlink "$sdk_root/${PACK_VERSION}/tools/Linux/binutils/bin/$b" || true)"
+            test -n "$target" || { echo "FAIL: $b is not a symlink" >&2; exit 1; }
+            echo "  $b -> $target"
+          done
+
+      - name: scaffold android template with RunAOTCompilation=true
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/aot-app" && cd "$RUNNER_TEMP/aot-app"
+          dotnet new android -n AotSmoke -o .
+          csproj="$(find . -maxdepth 2 -name '*.csproj' | head -1)"
+          test -n "$csproj"
+          # Inject AOT publish properties into the first <PropertyGroup>.
+          sed -i '0,/<PropertyGroup>/s|<PropertyGroup>|<PropertyGroup>\n    <RunAOTCompilation>true</RunAOTCompilation>\n    <PublishTrimmed>true</PublishTrimmed>\n    <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>|' "$csproj"
+          cat "$csproj"
+
+      - name: dotnet publish -c Release -f net*-android -r android-arm64
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/aot-app"
+          # Discover the android TFM the workload installed (e.g. net10.0-android).
+          tfm="$(grep -oE '<TargetFramework[s]?>[^<]+' AotSmoke.csproj \
+                  | sed -E 's/.*>//' | tr ';' '\n' | grep android | head -1)"
+          test -n "$tfm" || { echo "FAIL: no android TFM detected" >&2; exit 1; }
+          echo "publishing tfm=$tfm rid=android-arm64"
+          dotnet publish -c Release -f "$tfm" -r android-arm64
+          # Assert an APK actually came out.
+          apk="$(find bin/Release -name '*-Signed.apk' -o -name '*.apk' | head -1)"
+          test -n "$apk" || { echo "FAIL: no APK in bin/Release" >&2; ls -R bin/Release; exit 1; }
+          echo "OK: produced $apk"
+          ls -la "$apk"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aot-publish-logs-${{ env.PACK_VERSION }}
+          path: |
+            ${{ runner.temp }}/aot-app/bin/Release/**/*.apk
+            ${{ runner.temp }}/aot-app/obj/Release/**/*.log
+          retention-days: 14
+          if-no-files-found: ignore

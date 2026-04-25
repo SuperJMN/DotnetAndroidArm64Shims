@@ -107,8 +107,22 @@ jobs:
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
-      - name: install shellcheck
-        run: sudo apt-get update -y && sudo apt-get install -y shellcheck
+      - name: install shellcheck + LLVM 19 (Phase 6 binutils overlay)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck wget gnupg ca-certificates binutils
+          # apt.llvm.org publishes arm64 packages for the supported Ubuntu LTS
+          # codenames; ubuntu-22.04-arm runs jammy.
+          codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/apt.llvm.org.gpg
+          echo "deb http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-19 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-19.list
+          sudo apt-get update -y
+          sudo apt-get install -y llvm-19 lld-19
+          test -x /usr/lib/llvm-19/bin/llc
+          test -x /usr/lib/llvm-19/bin/ld.lld
       - name: shellcheck
         run: shellcheck scripts/install-shims.sh scripts/package-release.sh scripts/extract-reference-symbols.sh
       - name: collect built shims
@@ -123,10 +137,17 @@ jobs:
         run: |
           set -euo pipefail
           fake="$RUNNER_TEMP/fake-dotnet"
-          mkdir -p "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/Linux"
+          pack="$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}"
+          mkdir -p "$pack/tools/Linux/binutils/bin"
           # touch placeholder x86_64 binaries so backup logic exercises
-          : > "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/libMono.Unix.so"
-          : > "$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/libZipSharpNative-3-3.so"
+          : > "$pack/tools/libMono.Unix.so"
+          : > "$pack/tools/libZipSharpNative-3-3.so"
+          # binutils/bin placeholders — non-empty, executable, so backup logic
+          # treats them as real x86_64 originals.
+          for b in as ld llc llvm-mc llvm-objcopy llvm-strip; do
+            printf 'x86_64 placeholder for %s\n' "$b" > "$pack/tools/Linux/binutils/bin/$b"
+            chmod +x "$pack/tools/Linux/binutils/bin/$b"
+          done
           # serve dist/ over a local HTTP server so install-shims.sh can fetch it
           mkdir -p "$RUNNER_TEMP/release/${PACK_VERSION}"
           cp dist/shims-linux-arm64-${PACK_VERSION}.tar.gz "$RUNNER_TEMP/release/${PACK_VERSION}/"
@@ -134,9 +155,52 @@ jobs:
           sleep 1
           PACK_ROOT="$fake/packs/Microsoft.Android.Sdk.Linux" \
             RELEASE_BASE="http://127.0.0.1:8765" \
-            bash scripts/install-shims.sh --version "${PACK_VERSION}"
-          # re-run: must be a no-op
+            bash scripts/install-shims.sh --version "${PACK_VERSION}" --llvm-major 19
+          # re-run: must be a no-op for both .so/aapt2 AND binutils symlinks
           PACK_ROOT="$fake/packs/Microsoft.Android.Sdk.Linux" \
             RELEASE_BASE="http://127.0.0.1:8765" \
-            bash scripts/install-shims.sh --version "${PACK_VERSION}" | tee /tmp/second.log
+            bash scripts/install-shims.sh --version "${PACK_VERSION}" --llvm-major 19 \
+            | tee /tmp/second.log
           grep -q "already shimmed" /tmp/second.log
+          grep -q "already symlinked" /tmp/second.log
+      - name: assert binutils overlay
+        run: |
+          set -euo pipefail
+          bindir="$RUNNER_TEMP/fake-dotnet/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/Linux/binutils/bin"
+          backup="$RUNNER_TEMP/fake-dotnet/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}/tools/Linux/binutils/.x86_64-backup"
+          declare -A want=(
+            [as]=/usr/bin/as
+            [ld]=/usr/lib/llvm-19/bin/ld.lld
+            [llc]=/usr/lib/llvm-19/bin/llc
+            [llvm-mc]=/usr/lib/llvm-19/bin/llvm-mc
+            [llvm-objcopy]=/usr/lib/llvm-19/bin/llvm-objcopy
+            [llvm-strip]=/usr/lib/llvm-19/bin/llvm-strip
+          )
+          for bin in "${!want[@]}"; do
+            target="$(readlink "$bindir/$bin" || true)"
+            if [[ "$target" != "${want[$bin]}" ]]; then
+              echo "FAIL: $bin -> '$target' (expected '${want[$bin]}')" >&2
+              exit 1
+            fi
+            test -f "$backup/$bin" || { echo "FAIL: backup missing for $bin" >&2; exit 1; }
+            "$bindir/$bin" --version >/dev/null
+            echo "OK: $bin -> ${want[$bin]} (backed up, --version runs)"
+          done
+      - name: --skip-binutils still works on a host with LLVM
+        run: |
+          set -euo pipefail
+          fake2="$RUNNER_TEMP/fake-dotnet-skip"
+          pack="$fake2/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}"
+          mkdir -p "$pack/tools/Linux/binutils/bin"
+          : > "$pack/tools/libMono.Unix.so"
+          : > "$pack/tools/libZipSharpNative-3-3.so"
+          for b in as ld llc llvm-mc llvm-objcopy llvm-strip; do
+            printf 'placeholder %s\n' "$b" > "$pack/tools/Linux/binutils/bin/$b"
+            chmod +x "$pack/tools/Linux/binutils/bin/$b"
+          done
+          PACK_ROOT="$fake2/packs/Microsoft.Android.Sdk.Linux" \
+            RELEASE_BASE="http://127.0.0.1:8765" \
+            bash scripts/install-shims.sh --version "${PACK_VERSION}" --skip-binutils
+          # binutils dir must still hold real files (not symlinks)
+          test ! -L "$pack/tools/Linux/binutils/bin/llc"
+          test ! -d "$pack/tools/Linux/binutils/.x86_64-backup"

@@ -215,6 +215,66 @@ new series and updating the comparison row in
 
 ---
 
+## Scenario F: LLVM major bump inside the pack (binutils-only drift)
+
+Symptom: watcher issue says aapt2/mono/libzip sha256s **still match** an
+existing release, but **only** the `binutils.*` sha256s drifted. Most
+likely cause: Microsoft moved the bundled LLVM version inside the pack
+(e.g. 18.1 → 19.1), which rewrites every binary under
+`tools/Linux/binutils/bin/`.
+
+Why this is cheap: the shim's binutils strategy is host-installed
+symlinks (see [`docs/llvm-toolchain.md`](llvm-toolchain.md)), so the new
+pack-side binaries don't need rebuilding. Only the manifest needs to
+catch up.
+
+### Steps
+
+1. **Confirm the pack still emits IR your `preferred_llvm_majors`
+   covers.** Spot-check by running the new pack's bundled `llc --version`
+   under qemu-x86_64, or by reading dotnet/android's release notes for
+   the new SDK band. If the new pack pins LLVM 20 and the IR uses 20+
+   features, bump `compatibility.json::binutils.preferred_llvm_majors`
+   to put `20` first and add an entry for the new major to the apt
+   one-liner in `host_install_recipe`.
+
+2. **Add the new sha256 anchors to `compatibility.json::anchors`** for
+   the matching release tag (probably the one the watcher said still
+   matches for aapt2/mono/libzip):
+
+   ```bash
+   V=36.2.x  # the version that drifted
+   curl -fsSL -o /tmp/pack.nupkg \
+     "https://www.nuget.org/api/v2/package/Microsoft.Android.Sdk.Linux/$V"
+   mkdir -p /tmp/pack
+   for b in as ld llc llvm-mc llvm-objcopy llvm-strip; do
+     unzip -p /tmp/pack.nupkg "tools/Linux/binutils/bin/$b" | sha256sum
+   done
+   ```
+
+   Update the existing release tag's `anchors` block with these new
+   sha256s (or, if the existing aapt2/mono/libzip sha256s also drifted
+   in the same bump, treat as Scenario A and create a new release tag).
+
+3. **Update `docs/llvm-toolchain.md`** to mention the new LLVM major if
+   you bumped `preferred_llvm_majors`. Note that older clients on hosts
+   without LLVM 20 will still get a working install via the fallback
+   majors (`[20, 19, 18, 17, 16, 15]`) as long as the pack's IR is
+   accepted by their LLVM.
+
+4. **Re-run the watcher** for the version: `gh workflow run
+   watch-nuget.yml -f pack_version=$V`. The drift issue should now
+   resolve into an aliasable PR.
+
+### What you do NOT need to do
+
+- Build a new shim release. The .so/aapt2 binaries we ship are unchanged.
+- Touch `scripts/install-shims.sh`. The mapping logic is data-driven from
+  `compatibility.json::binutils.mapping`.
+- Update `pack-versions/<v>.env`. That file is for aapt2-only metadata.
+
+---
+
 ## Manual fingerprint inspection (debugging)
 
 To see what the watcher would do for a specific version without running
@@ -228,14 +288,22 @@ mkdir -p /tmp/pack && unzip -q -o /tmp/pack.nupkg \
   "tools/Linux/aapt2" \
   "tools/libMono.Unix.so" \
   "tools/libZipSharpNative-3-3.so" \
+  "tools/Linux/binutils/bin/as" \
+  "tools/Linux/binutils/bin/ld" \
+  "tools/Linux/binutils/bin/llc" \
+  "tools/Linux/binutils/bin/llvm-mc" \
+  "tools/Linux/binutils/bin/llvm-objcopy" \
+  "tools/Linux/binutils/bin/llvm-strip" \
   -d /tmp/pack
 sha256sum /tmp/pack/tools/Linux/aapt2 \
           /tmp/pack/tools/libMono.Unix.so \
-          /tmp/pack/tools/libZipSharpNative-3-3.so
+          /tmp/pack/tools/libZipSharpNative-3-3.so \
+          /tmp/pack/tools/Linux/binutils/bin/*
 ```
 
 Cross-reference against `compatibility.json::anchors` to find the
-matching release tag, or note which sha256 has drifted.
+matching release tag, or note which sha256 has drifted (Scenarios A–E
+for the .so/aapt2 trio, Scenario F for binutils-only drift).
 
 ---
 

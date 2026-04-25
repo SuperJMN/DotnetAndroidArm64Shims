@@ -1,56 +1,60 @@
-# LLVM toolchain (deferred — out of scope for v1)
+# LLVM toolchain (Phase 6 — packaged in v1) ✅
 
 The pack ships an LLVM bundle under `tools/Linux/binutils/`:
 
 - `bin/as`, `bin/ld` — host binutils used as the GNU assembler / linker for AOT-emitted code.
 - `bin/llc`, `bin/llvm-mc`, `bin/llvm-objcopy`, `bin/llvm-strip`, plus `lib/liblld*.so.*`, `libLLVM-*.so` — the LLVM tools.
 
-These are **only** invoked by the AOT and NativeAOT publish paths. The default Mono APK build (which is what most apps including the Pokémon canary use) does not touch them.
+These are **only** invoked by the AOT and NativeAOT publish paths. The default Mono APK build (which is what most apps including the Pokémon canary use) does not touch them — so v1 of the shim package shipped without them. Phase 6 packages an in-the-wild AOT fix that was first applied by hand on the rpi4 worker; the install script now does the equivalent automatically.
 
-## Why we're skipping them
+## Implementation (v1)
 
-- Materially more work: the LLVM bundle is ~200 MB and built from a pinned LLVM tag with Android-specific patches.
-- Limited audience among the actual users of this shim repo.
-- Easier to revisit after Phase 4 confirms the simple Mono path works end-to-end.
+**Strategy:** host-installed LLVM, **not** bundled. `scripts/install-shims.sh` symlinks the 6 x86_64 binaries inside `tools/Linux/binutils/bin/` to host-installed equivalents:
 
-## When we'd come back
+```
+binutils/bin/as           → /usr/bin/as                       (system binutils, aarch64)
+binutils/bin/ld           → /usr/lib/llvm-{N}/bin/ld.lld      (LLD as drop-in for ld)
+binutils/bin/llc          → /usr/lib/llvm-{N}/bin/llc
+binutils/bin/llvm-mc      → /usr/lib/llvm-{N}/bin/llvm-mc
+binutils/bin/llvm-objcopy → /usr/lib/llvm-{N}/bin/llvm-objcopy
+binutils/bin/llvm-strip   → /usr/lib/llvm-{N}/bin/llvm-strip
+```
 
-If a user reports needing `PublishAot=true` or `RunAOTCompilation=true` on an arm64 host, reopen this doc and:
+`{N}` is the highest LLVM major present on the host that's ≥ 15, picked from `compatibility.json::binutils.preferred_llvm_majors` (default `[19,18,17,16,15]`). Override with `install-shims.sh --llvm-major 18`. Originals are backed up to `tools/Linux/binutils/.x86_64-backup/`. Idempotent on re-run. If the host has no acceptable LLVM, the script prints the apt one-liner below and exits with code 7 — the .so/aapt2 overlay still succeeded, so the install is "partial" rather than rolled back. Re-run after installing LLVM, or pass `--skip-binutils` if you don't need AOT.
 
-1. Identify the pinned LLVM tag from the pack (`llc --version` will print it).
-2. Cross-build LLVM for `linux-aarch64` using upstream's CMake (well-supported).
-3. Add to the shim release tarball.
-4. Bump the bootstrap script to overlay the `binutils/` directory too.
+### User prerequisite (one apt one-liner)
 
-Until then: if a user tries to AOT-publish on arm64, DotnetDeployer should detect this and emit a clear error pointing here.
+The shim's only new prereq for AOT publishes:
 
-## Pending: confirmed reproduction (next iteration)
+```bash
+codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key |
+  sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/apt.llvm.org.gpg
+echo "deb http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-19 main" |
+  sudo tee /etc/apt/sources.list.d/llvm-19.list
+sudo apt-get update
+sudo apt-get install -y llvm-19 lld-19 binutils
+```
 
-**Status:** triggered in the wild — promote from "deferred" to actionable TODO.
+Validated on Pi OS bullseye and Ubuntu jammy. apt.llvm.org publishes aarch64 packages for both. Bullseye-backports is **not** sufficient — it does not ship LLVM ≥ 15 for arm64.
 
-- **Symptom.** Building an Android project with `RunAOTCompilation=true` (Release config) on linux-arm64 fails the moment MSBuild invokes `llc`:
+### Why host-installed and not bundled
 
-  ```
-  System.ComponentModel.Win32Exception (8): An error occurred trying to start process
-  '/home/<user>/.dotnet/packs/Microsoft.Android.Sdk.Linux/<ver>/tools/Linux/binutils/bin/llc'
-  with working directory 'obj/Release/net*-android/android/'. Exec format error
-  ```
+| Option           | Tarball delta             | Prereqs                           | Verdict |
+|------------------|---------------------------|-----------------------------------|---------|
+| Bundle           | +~50 MB compressed (the LLVM 18 .so set; the 6 bin/ entries themselves are ~1 MB) | None (works on a fresh Pi)        | Rejected for v1 |
+| Host-installed   | 0                         | `llvm-19 lld-19 binutils` via apt | **Chosen** |
 
-  `errno 8` = `ENOEXEC`: the kernel refuses to exec the binary because it is x86_64 ELF on an aarch64 host.
+Rationale:
+1. The bundled path would have to ship the matching `lib/libLLVM-*.so.18.1` + `liblld*.so.18.1` (~95 MB uncompressed) for the cross-built `bin/` entries to load, ballooning the release artifact.
+2. Anyone doing serious Pi-4 .NET dev already has LLVM/binutils available or trivially obtainable — the friction is one apt command, not a build-from-source ordeal.
+3. The host-installed strategy decouples our release cadence from upstream LLVM bumps in the SDK pack: when Microsoft moves from LLVM 18 to 19 inside the pack (as has happened across the 35.x → 36.x series), our shim doesn't need a rebuild — only a manifest update to bump `binutils.preferred_llvm_majors`. See `docs/maintenance.md` Scenario F.
 
-- **Root cause.** The entire `tools/Linux/binutils/bin/` directory inside `Microsoft.Android.Sdk.Linux` is shipped as x86_64 ELF. The current shim set (`aapt2`, `libZipSharpNative-3-3.so`, `libMono.Unix.so` — see `scripts/install-shims.sh`) does **not** cover any of the binutils binaries, so AOT publish paths break immediately on arm64 hosts even with shims installed.
+Revisit only if user feedback shows the apt prereq is too friction-heavy.
 
-- **Pinned context.** Reproduced on a Raspberry Pi 4 (Debian/Ubuntu arm64) against `Microsoft.Android.Sdk.Linux` **36.1.53**, driven from the [DotnetFleet](https://github.com/SuperJMN/DotnetFleet) build pipeline.
+## Validated reproduction recipe (2026-04-25, kept for reference)
 
-- **Action item for the next iteration.**
-  1. **Audit the whole `tools/Linux/binutils/bin/` directory**, not just `llc`. See the validated list below.
-  2. Provide aarch64 replacements — either repackaged from the host's system binutils + LLVM packages (cheapest, validated below), or cross-built from the same upstream LLVM tag the pack pins (most faithful).
-  3. Extend `scripts/install-shims.sh` and the release tarball to overlay the `binutils/` tree, mirroring the existing `tools/Linux/aapt2` overlay (with backup to `tools/Linux/binutils/.x86_64-backup/`).
-  4. Add a verification step that runs `<binary> --version` for each shipped binutils binary on arm64 to catch ENOEXEC regressions in CI.
-
-## Validated reproduction recipe (2026-04-25)
-
-Manually shimmed on the same Rpi4 worker (Debian 11 bullseye, aarch64, `Microsoft.Android.Sdk.Linux` 36.1.53) and confirmed end-to-end: `dotnet publish -c Release -f net10.0-android -r android-arm64` of the Pokémon project produces a signed APK (~85 MB) and AAB (~81 MB). The recipe below is therefore the cheapest known-good path; the next-iteration shim package can implement it directly.
+Manually shimmed on the Rpi4 worker (Debian 11 bullseye, aarch64, `Microsoft.Android.Sdk.Linux` 36.1.53) and confirmed end-to-end: `dotnet publish -c Release -f net10.0-android -r android-arm64` of the Pokémon project produces a signed APK (~85 MB) and AAB (~81 MB). The implementation above is a packaging of this recipe.
 
 ### 1. Exact set of x86_64 binaries in `tools/Linux/binutils/bin/`
 
@@ -65,9 +69,9 @@ Manually shimmed on the same Rpi4 worker (Debian 11 bullseye, aarch64, `Microsof
 | `llvm-objcopy`| ELF 64-bit LSB, x86-64     |                                                    |
 | `llvm-strip`  | ELF 64-bit LSB, x86-64     |                                                    |
 
-Other entries in the directory (per-arch wrappers like `aarch64-linux-android-as`, `arm-linux-androideabi-ld`, etc.) are already arm64-friendly stubs and do **not** need shimming.
+Other entries in the directory (per-arch wrappers like `aarch64-linux-android-as`, `arm-linux-androideabi-ld`, etc.) are already arm64-friendly stubs and do **not** need shimming. There are **no** `objcopy`, `objdump`, `lld`, `lld-link`, `wasm-ld` binaries in this directory in pack 36.1.53.
 
-There are **no** `objcopy`, `objdump`, `lld`, `lld-link`, `wasm-ld` binaries in this directory in pack 36.1.53. (Earlier drafts of this doc listed them speculatively.)
+(Pack 35.0.105 ships **byte-identical** binutils — same sha256s for all 6 entries. `llvm-objcopy` is also byte-identical to `llvm-strip` in both packs; they're the same binary under two names.)
 
 ### 2. Minimum LLVM major: 15
 
@@ -85,36 +89,18 @@ error XA3006: Could not compile native assembly file: environment.arm64-v8a.ll
 
 Validated working: **LLVM 19.1.7** (`llvm-19` from `apt.llvm.org/bullseye`, `llvm-toolchain-bullseye-19 main`). Anything ≥ 15 should work; staying close to upstream's current major (≥ 18) is the safer choice.
 
-### 3. Verified mapping (drop-in replacements)
+### 3. Original symptom (kept for ENOEXEC web search hits)
 
 ```
-binutils/bin/as           →  /usr/bin/as                       # GNU binutils 2.35.2 (system, aarch64)
-binutils/bin/ld           →  /usr/lib/llvm-19/bin/ld.lld       # LLD 19.1.7 — drop-in for ld
-binutils/bin/llc          →  /usr/lib/llvm-19/bin/llc          # LLVM 19.1.7
-binutils/bin/llvm-mc      →  /usr/lib/llvm-19/bin/llvm-mc      # LLVM 19.1.7
-binutils/bin/llvm-objcopy →  /usr/lib/llvm-19/bin/llvm-objcopy # LLVM 19.1.7
-binutils/bin/llvm-strip   →  /usr/lib/llvm-19/bin/llvm-strip   # LLVM 19.1.7
+System.ComponentModel.Win32Exception (8): An error occurred trying to start process
+'/home/<user>/.dotnet/packs/Microsoft.Android.Sdk.Linux/<ver>/tools/Linux/binutils/bin/llc'
+with working directory 'obj/Release/net*-android/android/'. Exec format error
 ```
 
-`ld.lld` works as a drop-in for the GNU `ld` interface that the Android workload invokes — no flag translation needed for the Pokémon (Mono+AOT) path. If a future workload starts depending on GNU-ld-only flags, fall back to `/usr/bin/ld` from system binutils for the `ld` slot.
+`errno 8` = `ENOEXEC`: the kernel refuses to exec the binary because it is x86_64 ELF on an aarch64 host. After running `install-shims.sh` against an SDK pack on a host with LLVM ≥ 15 installed, this exception no longer occurs — the publish proceeds through `llc` → `as` → `ld.lld` and produces a signed arm64-v8a APK.
 
-### 4. Package source
+## Resolved questions
 
-For Debian/Ubuntu arm64 hosts, the canonical source for a recent enough LLVM is the official llvm.org apt repository, which **does** publish aarch64 packages for bullseye:
-
-```bash
-wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key |
-  gpg --dearmor -o /etc/apt/trusted.gpg.d/apt.llvm.org.gpg
-echo "deb http://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-19 main" \
-  > /etc/apt/sources.list.d/llvm-19.list
-apt-get update
-apt-get install -y llvm-19 lld-19 binutils
-```
-
-(Bullseye-backports is **not** sufficient — it does not ship LLVM ≥ 15 for arm64.)
-
-### 5. Open questions for the next iteration
-
-- Whether to **bundle** the LLVM/binutils binaries inside the shim release tarball (large: ~150 MB compressed) or to depend on a host-installed LLVM (small: just symlinks). The validated recipe above is the host-installed variant — far cheaper to ship, but pushes one more apt prerequisite onto the user.
-- Whether `ld.lld` is acceptable long-term, or whether the shim should provide a real GNU `ld` for stricter compatibility.
-- Whether the IR-emission path also needs aarch64-tuned `--mtriple`/`--mcpu` overrides; with LLVM 19 the build succeeded with the SDK's stock invocation, so currently no.
+- **Bundle or host-install LLVM?** Host-install for v1 (see "Why host-installed and not bundled" above). Revisit if user feedback shows the apt prereq is too painful.
+- **Is `ld.lld` an acceptable drop-in for `ld` long-term?** Yes for the validated Mono+AOT path. The Android workload's link line uses options LLD supports natively — no flag translation needed. If a future workload starts depending on GNU-ld-only flags, override the `ld` mapping in `compatibility.json::binutils.mapping` to point at `/usr/bin/ld`.
+- **Does the IR-emission path need aarch64-tuned `--mtriple`/`--mcpu`?** No. LLVM 19 accepts the SDK's stock invocation as-is.
