@@ -93,8 +93,14 @@ jobs:
               "tools/Linux/aapt2" \
               "tools/libMono.Unix.so" \
               "tools/libZipSharpNative-3-3.so" \
+              "tools/Linux/binutils/bin/as" \
+              "tools/Linux/binutils/bin/ld" \
+              "tools/Linux/binutils/bin/llc" \
+              "tools/Linux/binutils/bin/llvm-mc" \
+              "tools/Linux/binutils/bin/llvm-objcopy" \
+              "tools/Linux/binutils/bin/llvm-strip" \
               -d "$workdir" 2>/dev/null || {
-                echo "  ! pack layout differs for $v (missing one of the three host binaries)"
+                echo "  ! pack layout differs for $v (missing one of the host binaries)"
                 echo "$v" >> .work/needs-build.txt
                 continue
             }
@@ -102,9 +108,21 @@ jobs:
             sha_aapt2=$(sha256sum "$workdir/tools/Linux/aapt2" | awk '{print $1}')
             sha_mono=$(sha256sum "$workdir/tools/libMono.Unix.so" | awk '{print $1}')
             sha_libzip=$(sha256sum "$workdir/tools/libZipSharpNative-3-3.so" | awk '{print $1}')
-            echo "  aapt2:  $sha_aapt2"
-            echo "  mono:   $sha_mono"
-            echo "  libzip: $sha_libzip"
+            sha_as=$(sha256sum "$workdir/tools/Linux/binutils/bin/as" | awk '{print $1}')
+            sha_ld=$(sha256sum "$workdir/tools/Linux/binutils/bin/ld" | awk '{print $1}')
+            sha_llc=$(sha256sum "$workdir/tools/Linux/binutils/bin/llc" | awk '{print $1}')
+            sha_llvm_mc=$(sha256sum "$workdir/tools/Linux/binutils/bin/llvm-mc" | awk '{print $1}')
+            sha_llvm_objcopy=$(sha256sum "$workdir/tools/Linux/binutils/bin/llvm-objcopy" | awk '{print $1}')
+            sha_llvm_strip=$(sha256sum "$workdir/tools/Linux/binutils/bin/llvm-strip" | awk '{print $1}')
+            echo "  aapt2:        $sha_aapt2"
+            echo "  mono:         $sha_mono"
+            echo "  libzip:       $sha_libzip"
+            echo "  as:           $sha_as"
+            echo "  ld:           $sha_ld"
+            echo "  llc:          $sha_llc"
+            echo "  llvm-mc:      $sha_llvm_mc"
+            echo "  llvm-objcopy: $sha_llvm_objcopy"
+            echo "  llvm-strip:   $sha_llvm_strip"
 
             match_tag=""
             while IFS= read -r entry; do
@@ -112,22 +130,42 @@ jobs:
               a=$(jq -r '.value["tools/Linux/aapt2"]' <<<"$entry")
               m=$(jq -r '.value["tools/libMono.Unix.so"]' <<<"$entry")
               z=$(jq -r '.value["tools/libZipSharpNative-3-3.so"]' <<<"$entry")
-              if [[ "$sha_aapt2" == "$a" && "$sha_mono" == "$m" && "$sha_libzip" == "$z" ]]; then
+              b_as=$(jq -r '.value["tools/Linux/binutils/bin/as"]'           <<<"$entry")
+              b_ld=$(jq -r '.value["tools/Linux/binutils/bin/ld"]'           <<<"$entry")
+              b_llc=$(jq -r '.value["tools/Linux/binutils/bin/llc"]'          <<<"$entry")
+              b_mc=$(jq -r '.value["tools/Linux/binutils/bin/llvm-mc"]'      <<<"$entry")
+              b_oc=$(jq -r '.value["tools/Linux/binutils/bin/llvm-objcopy"]' <<<"$entry")
+              b_st=$(jq -r '.value["tools/Linux/binutils/bin/llvm-strip"]'   <<<"$entry")
+              if [[ "$sha_aapt2"        == "$a"    && \
+                    "$sha_mono"         == "$m"    && \
+                    "$sha_libzip"       == "$z"    && \
+                    "$sha_as"           == "$b_as" && \
+                    "$sha_ld"           == "$b_ld" && \
+                    "$sha_llc"          == "$b_llc" && \
+                    "$sha_llvm_mc"      == "$b_mc" && \
+                    "$sha_llvm_objcopy" == "$b_oc" && \
+                    "$sha_llvm_strip"   == "$b_st" ]]; then
                 match_tag="$tag"
                 break
               fi
             done < .work/anchor-entries.jsonl
 
             if [[ -n "$match_tag" ]]; then
-              echo "  → all three sha256s match release $match_tag, will alias"
+              echo "  → all 9 sha256s match release $match_tag, will alias"
               echo "$v $match_tag" >> .work/aliasable.txt
             else
-              echo "  → drift detected, needs new shim build"
+              echo "  → drift detected, needs new shim build or LLVM mapping review"
               {
                 echo "version=$v"
                 echo "aapt2=$sha_aapt2"
                 echo "mono=$sha_mono"
                 echo "libzip=$sha_libzip"
+                echo "binutils.as=$sha_as"
+                echo "binutils.ld=$sha_ld"
+                echo "binutils.llc=$sha_llc"
+                echo "binutils.llvm-mc=$sha_llvm_mc"
+                echo "binutils.llvm-objcopy=$sha_llvm_objcopy"
+                echo "binutils.llvm-strip=$sha_llvm_strip"
                 echo "---"
               } >> .work/needs-build.txt
             fi
@@ -202,7 +240,8 @@ jobs:
           1. Inspect what changed: \`./scripts/extract-reference-symbols.sh <version>\`
           2. If only the aapt2 version string drifted (most common case), create \`pack-versions/<version>.env\` with the new \`AAPT2_VERSION_STRING\` / \`AAPT2_AOSP_BUILD_ID\` and dispatch \`release.yml\` with that pack version. The two .so shims should rebuild with the same sha256; if they do, only \`tools/Linux/aapt2\` actually needs the new release.
           3. If a .so soname suffix changed (e.g. \`-3-3\` → \`-3-4\`), bump \`LIBZIPSHARP_SONAME_SUFFIX\` and the upstream submodule pin.
-          4. After the release publishes, add the new sha256 anchors to \`compatibility.json::anchors.<new-tag>\` and re-run this workflow with \`pack_version: <version>\` to convert the issue into an aliasable PR.
+          4. If only the \`binutils.*\` sha256s drifted (and aapt2/mono/libzip still match an existing release), Microsoft most likely bumped the bundled LLVM major (e.g. 18 → 19). No new shim release is needed — the host-installed LLVM strategy already abstracts it. Update \`compatibility.json::anchors.<existing-tag>.binutils.*\` with the new sha256s and, if the LLVM major needs bumping, also update \`compatibility.json::binutils.preferred_llvm_majors\` and \`docs/llvm-toolchain.md\`. See \`docs/maintenance.md\` Scenario F.
+          5. After the release publishes (or the binutils-only manifest update lands), add the new sha256 anchors to \`compatibility.json::anchors.<new-tag>\` and re-run this workflow with \`pack_version: <version>\` to convert the issue into an aliasable PR.
 
           Dispatch link: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml"
 

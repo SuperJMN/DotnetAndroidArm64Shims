@@ -25,15 +25,17 @@ These are the **only** host binaries that need an arm64 build (verified against 
 | `tools/Linux/aapt2` | AOSP `frameworks/base/tools/aapt2` | Medium-high | Every APK/AAB build (resource compilation) |
 | `tools/libMono.Unix.so` | [mono/Mono.Posix](https://github.com/mono/Mono.Posix) | Low | Most MSBuild Android tasks (P/Invoke) |
 | `tools/libZipSharpNative-3-3.so` | [xamarin/LibZipSharp](https://github.com/xamarin/LibZipSharp) | Low | Zip/AAB packaging |
-| `tools/Linux/binutils/bin/{as,ld,llc,llvm-mc,llvm-objcopy,llvm-strip}` and `lib*.so.*` | dotnet/android prebuilt LLVM | Optional / deferred | **Only** AOT and NativeAOT scenarios |
+| `tools/Linux/binutils/bin/{as,ld,llc,llvm-mc,llvm-objcopy,llvm-strip}` | Host LLVM ≥ 15 + system binutils (symlinked, not bundled) | Symlinks at install time | AOT and NativeAOT publish paths |
 
 Everything else under the pack is already shipped as aarch64 (`tools/lib/arm64-v8a/*` are *device* payloads, `aarch64-linux-android-*` are cross-compilers that target Android arm64 — those run on the host but the pack already bundles aarch64 ELFs for them).
 
+> **AOT prerequisite (one-time, only if you publish with `RunAOTCompilation=true`):** install `llvm-19 lld-19 binutils` from `apt.llvm.org`. See [`docs/llvm-toolchain.md`](docs/llvm-toolchain.md) for the apt one-liner. `install-shims.sh` will print it and exit non-zero if it can't find LLVM ≥ 15 on the host. Pass `--skip-binutils` to opt out if you only do Mono APK builds.
+
 ## What's out of scope
 
-- AOT / NativeAOT publishing on arm64 hosts. The native LLVM toolchain (`llc`, `llvm-mc`, `lld*`) would also need arm64 builds. Mono APK targets (the default for most apps) **do not require** these, so we skip them in v1.
 - Targeting Android x86 / x86_64 from an arm64 host. Those Android-side cross-compilers are x86_64 ELFs in the pack; only matters for emulator-targeted debug builds.
 - Windows / macOS host arm64. Out of scope, different pack (`Microsoft.Android.Sdk.Windows`, `…Darwin`).
+- Bundling LLVM/binutils inside the shim tarball (host-installed via apt is the chosen v1 strategy — see `docs/llvm-toolchain.md` "Why host-installed and not bundled").
 
 ## Strategy
 

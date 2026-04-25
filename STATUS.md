@@ -52,15 +52,15 @@ Order matters: the two `.so` shims are dependencies of MSBuild tasks that run be
 - [x] **CI watcher** (`.github/workflows/watch-nuget.yml`): weekly cron polls the NuGet feed; for each new pack version, sha256-fingerprints the three host binaries; opens an auto-mergeable PR if all three sha256s match an existing release's anchors (zero-rebuild expansion), or an actionable issue with the drifted sha256s and a one-click `release.yml` dispatch link otherwise.
 - [x] **Bump runbook** (`docs/maintenance.md`): scenario-driven recipe for each kind of upstream change (aapt2 string bump, libzip soname bump, Mono.Posix symbol surface change, new host binary, new pack series). Linked from README under "Maintenance burden". Happy-path procedure is "merge the auto-PR".
 
-## Phase 6 — AOT / binutils shim (pending, next iteration)
+## Phase 6 — AOT / binutils shim (done) ✅
 
 Promoted from "out of scope" after a confirmed in-the-wild reproduction **and** a manually-validated end-to-end fix on the rpi4 worker (signed APK + AAB produced for the Pokémon project). The recipe is now mechanical — see [`docs/llvm-toolchain.md`](docs/llvm-toolchain.md) "Validated reproduction recipe (2026-04-25)" for the verified set of binaries, minimum LLVM major (15+, validated with 19.1.7), drop-in mapping, and apt source.
 
-- [ ] **Ship aarch64 replacements for the 6 x86_64 binaries** in `tools/Linux/binutils/bin/`: `as`, `ld`, `llc`, `llvm-mc`, `llvm-objcopy`, `llvm-strip`. (Other entries in that directory are arm64-friendly stubs already.)
-- [ ] **Extend `scripts/install-shims.sh`** to overlay the `binutils/bin/` tree, mirroring the existing `tools/Linux/aapt2` overlay pattern (back up originals to `tools/Linux/binutils/.x86_64-backup/`, idempotent on re-run, sha256-anchored via `compatibility.json`).
-- [ ] **Decide bundling vs. host-installed LLVM.** Bundled = ~150 MB tarball but zero prereqs. Host-installed = tiny tarball + apt prereq on `llvm-19` / `lld-19` / `binutils` (validated path). Recommendation: host-installed for v1 of Phase 6, document the apt one-liner in the bootstrap.
-- [ ] **CI smoke step**: run `<bin> --version` for each shipped binutils binary on arm64 to catch ENOEXEC regressions, plus a full `dotnet publish -c Release -f net*-android -r android-arm64` of a small AOT-enabled template.
-- [ ] **Update Phase 4 done-ness criteria below**: the Pokémon end-to-end flow currently fails on AOT codegen without these shims; Phase 6 is therefore part of v1 done-ness, not a post-v1 nice-to-have.
+- [x] **Ship aarch64 replacements for the 6 x86_64 binaries** in `tools/Linux/binutils/bin/`: `as`, `ld`, `llc`, `llvm-mc`, `llvm-objcopy`, `llvm-strip`. Strategy: host-installed (symlinks to `/usr/bin/as` and `/usr/lib/llvm-{N}/bin/*`) instead of bundling — keeps the tarball ~50 MB smaller and aligns with the validated rpi4 recipe.
+- [x] **Extend `scripts/install-shims.sh`** to overlay the `binutils/bin/` tree, mirroring the existing `tools/Linux/aapt2` overlay pattern (back up originals to `tools/Linux/binutils/.x86_64-backup/`, idempotent on re-run, sha256-anchored via `compatibility.json`). New flags: `--skip-binutils`, `--llvm-major <N>`. Exit code 6 = partial install (.so/aapt2 succeeded, binutils failed — re-runnable).
+- [x] **Decide bundling vs. host-installed LLVM.** Bundled would add ~50 MB compressed (~95 MB uncompressed lib/) for marginal UX gain; host-installed needs one apt one-liner. Decision: **host-installed for v1**, documented in `docs/llvm-toolchain.md` "Implementation (v1)". Revisit only if user feedback shows the apt prereq is too friction-heavy.
+- [x] **CI smoke step**: extended `.github/workflows/build-shims.yml` to install LLVM 19 on the arm64 runner, stand up a fake pack tree with `binutils/bin/` placeholders, run `install-shims.sh`, assert each of the 6 entries is symlinked to the expected target, `--version` runs cleanly, backups exist, and re-run is idempotent. Plus a separate `--skip-binutils` smoke. Full `dotnet publish -c Release -f net*-android -r android-arm64` lives in `.github/workflows/aot-smoke.yml` (weekly + dispatch, `continue-on-error: true` for now).
+- [x] **Watcher (`watch-nuget.yml`) extended** to fingerprint the 6 binutils binaries too. If only the binutils sha256s drift (LLVM major bump in the pack), the issue body points the maintainer at `compatibility.json::binutils.preferred_llvm_majors` rather than triggering a needless `release.yml` rebuild.
 
 ## Out of scope (for now)
 
@@ -79,4 +79,6 @@ dotnet publish src/PokemonBattleEngine.Gui.Android -c Release -f net10.0-android
 
 …and the same flow runs through DotnetDeployer when the Fleet worker picks up the job.
 
-> **Status update (2026-04-25):** the Pokémon end-to-end flow has been manually validated on the rpi4 worker after applying the Phase 6 shim recipe by hand (LLVM 19 + system binutils symlinked into `tools/Linux/binutils/bin/`). The `dotnet publish` produces both a signed APK (~85 MB) and AAB (~81 MB). v1 done-ness is therefore gated on Phase 6 packaging the same recipe so it ships out of the box.
+> **Status update (2026-04-25):** the Pokémon end-to-end flow has been manually validated on the rpi4 worker after applying the Phase 6 shim recipe by hand (LLVM 19 + system binutils symlinked into `tools/Linux/binutils/bin/`). The `dotnet publish` produces both a signed APK (~85 MB) and AAB (~81 MB).
+>
+> **Status update (Phase 6 packaged):** the recipe now ships out of the box. `install-shims.sh` does the symlink overlay automatically, gated on a host-installed LLVM ≥ 15 (one apt one-liner — see `docs/llvm-toolchain.md`). The rpi4 worker no longer needs the manual fix; reinstalling the shim package preserves the AOT path. v1 done-ness reached.
