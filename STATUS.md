@@ -52,9 +52,14 @@ Order matters: the two `.so` shims are dependencies of MSBuild tasks that run be
 - [x] **CI watcher** (`.github/workflows/watch-nuget.yml`): weekly cron polls the NuGet feed; for each new pack version, sha256-fingerprints the three host binaries; opens an auto-mergeable PR if all three sha256s match an existing release's anchors (zero-rebuild expansion), or an actionable issue with the drifted sha256s and a one-click `release.yml` dispatch link otherwise.
 - [x] **Bump runbook** (`docs/maintenance.md`): scenario-driven recipe for each kind of upstream change (aapt2 string bump, libzip soname bump, Mono.Posix symbol surface change, new host binary, new pack series). Linked from README under "Maintenance burden". Happy-path procedure is "merge the auto-PR".
 
+## Phase 6 — AOT / binutils shim (pending, next iteration)
+
+Promoted from "out of scope" after a confirmed in-the-wild reproduction.
+
+- [ ] **Cover `tools/Linux/binutils/bin/` on arm64.** Building an Android project with `RunAOTCompilation=true` (Release) on linux-arm64 fails with `System.ComponentModel.Win32Exception (8): … 'tools/Linux/binutils/bin/llc' … Exec format error` (errno 8 = ENOEXEC — x86_64 ELF on aarch64). The whole `binutils/bin/` directory (`as`, `ld`, `objcopy`, `objdump`, `llc`, `llvm-mc`, `llvm-objcopy`, `llvm-strip`, …) is shipped x86_64-only and is **not** covered by the current shim set in `scripts/install-shims.sh`. Reproduced with `Microsoft.Android.Sdk.Linux` 36.1.53 on a Raspberry Pi 4 (Debian/Ubuntu arm64) via the DotnetFleet pipeline. Action: audit the full `binutils/bin/` directory, provide aarch64 replacements (system binutils + LLVM packages, or cross-built LLVM from the pack's pinned tag), extend `install-shims.sh` to overlay the directory, and add a CI smoke step that runs `<bin> --version` for each. See [`docs/llvm-toolchain.md`](docs/llvm-toolchain.md) for the full write-up.
+
 ## Out of scope (for now)
 
-- AOT / NativeAOT scenarios → would require porting `llc`, `llvm-mc`, `llvm-objcopy`, `llvm-strip`, `lld*` to arm64. Doable (LLVM upstream supports linux-aarch64) but materially more work and few users hit it. Re-evaluate after Phase 4.
 - Targeting Android x86 / x86_64 from arm64 hosts (only relevant for emulator debug).
 
 ## Done-ness criteria
