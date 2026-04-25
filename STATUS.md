@@ -42,7 +42,7 @@ Order matters: the two `.so` shims are dependencies of MSBuild tasks that run be
 - [x] Run shim install on the rpi4 worker. ✅ (Pi OS bullseye, glibc 2.31, dotnet SDK 10.0.202, pack 36.1.53.)
 - [x] Build a vanilla `dotnet new android` template via `dotnet publish -c Release -f net10.0-android`. ✅ Produces signed APK + AAB. **~4 min** end-to-end on Pi 4 (8 GB) — the .so shims load cleanly; aapt2 still runs via qemu-x86_64 (binfmt_misc) until Phase 2 lands a native one.
 - [x] **Install + launch the APK on a real Android device.** ✅ Pixel device, cold start 234 ms, no FATAL/AndroidRuntime errors, `Hello, Android!` rendered. Activity displayed via `ActivityTaskManager: Displayed com.companyname.CanaryApp/...MainActivity: +234ms`.
-- [ ] Trigger DotnetDeployer for the [Pokémon-Battle-Engine](https://github.com/SuperJMN/Pokemon) repo from the Fleet UI. (Out of scope — DotnetDeployer integration.)
+- [ ] Trigger DotnetDeployer for the [Pokémon-Battle-Engine](https://github.com/SuperJMN/Pokemon) repo from the Fleet UI. (Out of scope — DotnetDeployer integration. **Currently blocked by Phase 6**: the Pokémon project's Release publish hits the AOT codegen path on `net10.0-android` and fails on the x86_64 `binutils/bin/llc`. Manually validated to work after applying the Phase 6 recipe by hand.)
 
 > **glibc baseline**: shims are now built inside `debian:11` (glibc 2.31) so they load on Pi OS bullseye. Building on the bare `ubuntu-22.04-arm` runner produced binaries depending on `GLIBC_2.33` (versioned `stat`/`fstat`/`lstat`/`mknod`), which fails to load on bullseye. Fixed in commit `56263e4`.
 
@@ -54,9 +54,13 @@ Order matters: the two `.so` shims are dependencies of MSBuild tasks that run be
 
 ## Phase 6 — AOT / binutils shim (pending, next iteration)
 
-Promoted from "out of scope" after a confirmed in-the-wild reproduction.
+Promoted from "out of scope" after a confirmed in-the-wild reproduction **and** a manually-validated end-to-end fix on the rpi4 worker (signed APK + AAB produced for the Pokémon project). The recipe is now mechanical — see [`docs/llvm-toolchain.md`](docs/llvm-toolchain.md) "Validated reproduction recipe (2026-04-25)" for the verified set of binaries, minimum LLVM major (15+, validated with 19.1.7), drop-in mapping, and apt source.
 
-- [ ] **Cover `tools/Linux/binutils/bin/` on arm64.** Building an Android project with `RunAOTCompilation=true` (Release) on linux-arm64 fails with `System.ComponentModel.Win32Exception (8): … 'tools/Linux/binutils/bin/llc' … Exec format error` (errno 8 = ENOEXEC — x86_64 ELF on aarch64). The whole `binutils/bin/` directory (`as`, `ld`, `objcopy`, `objdump`, `llc`, `llvm-mc`, `llvm-objcopy`, `llvm-strip`, …) is shipped x86_64-only and is **not** covered by the current shim set in `scripts/install-shims.sh`. Reproduced with `Microsoft.Android.Sdk.Linux` 36.1.53 on a Raspberry Pi 4 (Debian/Ubuntu arm64) via the DotnetFleet pipeline. Action: audit the full `binutils/bin/` directory, provide aarch64 replacements (system binutils + LLVM packages, or cross-built LLVM from the pack's pinned tag), extend `install-shims.sh` to overlay the directory, and add a CI smoke step that runs `<bin> --version` for each. See [`docs/llvm-toolchain.md`](docs/llvm-toolchain.md) for the full write-up.
+- [ ] **Ship aarch64 replacements for the 6 x86_64 binaries** in `tools/Linux/binutils/bin/`: `as`, `ld`, `llc`, `llvm-mc`, `llvm-objcopy`, `llvm-strip`. (Other entries in that directory are arm64-friendly stubs already.)
+- [ ] **Extend `scripts/install-shims.sh`** to overlay the `binutils/bin/` tree, mirroring the existing `tools/Linux/aapt2` overlay pattern (back up originals to `tools/Linux/binutils/.x86_64-backup/`, idempotent on re-run, sha256-anchored via `compatibility.json`).
+- [ ] **Decide bundling vs. host-installed LLVM.** Bundled = ~150 MB tarball but zero prereqs. Host-installed = tiny tarball + apt prereq on `llvm-19` / `lld-19` / `binutils` (validated path). Recommendation: host-installed for v1 of Phase 6, document the apt one-liner in the bootstrap.
+- [ ] **CI smoke step**: run `<bin> --version` for each shipped binutils binary on arm64 to catch ENOEXEC regressions, plus a full `dotnet publish -c Release -f net*-android -r android-arm64` of a small AOT-enabled template.
+- [ ] **Update Phase 4 done-ness criteria below**: the Pokémon end-to-end flow currently fails on AOT codegen without these shims; Phase 6 is therefore part of v1 done-ness, not a post-v1 nice-to-have.
 
 ## Out of scope (for now)
 
@@ -74,3 +78,5 @@ dotnet publish src/PokemonBattleEngine.Gui.Android -c Release -f net10.0-android
 ```
 
 …and the same flow runs through DotnetDeployer when the Fleet worker picks up the job.
+
+> **Status update (2026-04-25):** the Pokémon end-to-end flow has been manually validated on the rpi4 worker after applying the Phase 6 shim recipe by hand (LLVM 19 + system binutils symlinked into `tools/Linux/binutils/bin/`). The `dotnet publish` produces both a signed APK (~85 MB) and AAB (~81 MB). v1 done-ness is therefore gated on Phase 6 packaging the same recipe so it ships out of the box.
