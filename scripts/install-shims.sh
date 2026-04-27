@@ -13,6 +13,9 @@
 #   install-shims.sh --manifest /path      # use a local compatibility.json (offline)
 #   install-shims.sh --skip-binutils       # skip the AOT toolchain overlay
 #   install-shims.sh --llvm-major N        # pin host LLVM major (default: auto-detect)
+#   install-shims.sh --llvm-root /path     # use portable LLVM at /path/bin (skips
+#                                          #   /usr/lib/llvm-* probing). Also
+#                                          #   honored via $LLVM_ROOT env var.
 #   install-shims.sh --dry-run             # print what would happen
 #
 # Idempotent: re-running with the shim already in place is a no-op (verified
@@ -47,6 +50,7 @@ DRY_RUN=0
 MANIFEST_FILE=""
 SKIP_BINUTILS=0
 LLVM_MAJOR_OVERRIDE=""
+LLVM_ROOT="${LLVM_ROOT:-}"
 # Track final per-pack outcome so we exit with a sensible status code.
 ANY_BINUTILS_FAILED=0
 
@@ -59,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --manifest)       MANIFEST_FILE="$2"; shift 2 ;;
         --skip-binutils|--no-binutils) SKIP_BINUTILS=1; shift ;;
         --llvm-major)     LLVM_MAJOR_OVERRIDE="$2"; shift 2 ;;
+        --llvm-root)      LLVM_ROOT="$2"; shift 2 ;;
         --dry-run)        DRY_RUN=1; shift ;;
         -h|--help)
             sed -n '2,38p' "$0"
@@ -308,6 +313,18 @@ manifest_binutils_target() {
 }
 
 detect_host_llvm() {
+    if [[ -n "$LLVM_ROOT" ]]; then
+        # When a portable LLVM is provided, no version probing is needed —
+        # the templates will be redirected to "$LLVM_ROOT/bin/<basename>"
+        # by overlay_binutils. We still echo a value so callers and logs
+        # have something to show.
+        if [[ ! -x "$LLVM_ROOT/bin/llc" ]]; then
+            echo "!!   --llvm-root '$LLVM_ROOT' but '$LLVM_ROOT/bin/llc' missing or not executable" >&2
+            return 1
+        fi
+        echo "portable"
+        return 0
+    fi
     if [[ -n "$LLVM_MAJOR_OVERRIDE" ]]; then
         if [[ -x "/usr/lib/llvm-$LLVM_MAJOR_OVERRIDE/bin/llc" ]]; then
             echo "$LLVM_MAJOR_OVERRIDE"
@@ -406,7 +423,11 @@ overlay_binutils() {
         print_llvm_install_recipe
         return 7
     fi
-    echo "   detected host LLVM $llvm_major under /usr/lib/llvm-$llvm_major/"
+    if [[ "$llvm_major" == "portable" ]]; then
+        echo "   using portable LLVM at $LLVM_ROOT/bin/"
+    else
+        echo "   detected host LLVM $llvm_major under /usr/lib/llvm-$llvm_major/"
+    fi
 
     local rc=0
     local bin
@@ -418,7 +439,15 @@ overlay_binutils() {
             echo "!!     no host mapping for $rel in compatibility.json or defaults" >&2
             rc=8; continue
         fi
-        local src="${template//\{llvm\}/$llvm_major}"
+        local src
+        if [[ "$llvm_major" == "portable" && "$template" == /usr/lib/llvm-*/bin/* ]]; then
+            # Redirect any /usr/lib/llvm-{llvm}/bin/<x> mapping to the
+            # portable LLVM root. Non-LLVM mappings (e.g. /usr/bin/as for
+            # binutils) pass through unchanged.
+            src="$LLVM_ROOT/bin/${template##*/}"
+        else
+            src="${template//\{llvm\}/$llvm_major}"
+        fi
         if ! overlay_symlink "$src" "$bindir/$bin" "$backup_dir"; then
             rc=$?
         fi
