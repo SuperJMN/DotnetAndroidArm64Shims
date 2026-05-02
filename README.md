@@ -1,6 +1,6 @@
 # DotnetAndroidArm64Shims
 
-Native **linux-arm64** replacements for the host-side binaries that ship inside `Microsoft.Android.Sdk.Linux`, so that `dotnet publish -f net*-android` can run **natively on aarch64 hosts** (Raspberry Pi 4/5, Ampere/Graviton VMs, Apple Silicon Linux VMs, etc.).
+Native **linux-arm64** replacements for the host-side binaries used by `Microsoft.Android.Sdk.Linux` and Android SDK build-tools, so that `dotnet publish -f net*-android` can run **natively on aarch64 hosts** (Raspberry Pi 4/5, Ampere/Graviton VMs, Apple Silicon Linux VMs, etc.).
 
 > Tracking the upstream ask in [dotnet/android#11184](https://github.com/dotnet/android/issues/11184). If/when Microsoft publishes an official linux-arm64 host pack, this repo becomes obsolete.
 
@@ -18,7 +18,7 @@ error XA0111: Unsupported version of AAPT2
 
 ## What's in scope
 
-These are the **only** host binaries that need an arm64 build (verified against `Microsoft.Android.Sdk.Linux/36.1.53` and `35.0.105`):
+These are the host binaries that need an arm64 replacement (verified against `Microsoft.Android.Sdk.Linux/36.1.53`, `35.0.105`, and Android SDK build-tools `36.0.0`):
 
 | Binary | Source | Effort | Required for |
 |---|---|---|---|
@@ -26,6 +26,7 @@ These are the **only** host binaries that need an arm64 build (verified against 
 | `tools/libMono.Unix.so` | [mono/Mono.Posix](https://github.com/mono/Mono.Posix) | Low | Most MSBuild Android tasks (P/Invoke) |
 | `tools/libZipSharpNative-3-3.so` | [xamarin/LibZipSharp](https://github.com/xamarin/LibZipSharp) | Low | Zip/AAB packaging |
 | `tools/Linux/binutils/bin/{as,ld,llc,llvm-mc,llvm-objcopy,llvm-strip}` | Host LLVM ≥ 15 + system binutils (symlinked, not bundled) | Symlinks at install time | AOT and NativeAOT publish paths |
+| `<android-sdk>/build-tools/<version>/zipalign` | AOSP `build/tools/zipalign` via [lzhiyong/android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools) | Low | Signed APK publish |
 
 Everything else under the pack is already shipped as aarch64 (`tools/lib/arm64-v8a/*` are *device* payloads, `aarch64-linux-android-*` are cross-compilers that target Android arm64 — those run on the host but the pack already bundles aarch64 ELFs for them).
 
@@ -41,13 +42,14 @@ Everything else under the pack is already shipped as aarch64 (`tools/lib/arm64-v
 
 1. Build the shim binaries for `linux-arm64` in CI on every relevant `Microsoft.Android.Sdk.Linux` upstream release.
 2. Publish them as **GitHub releases**, one tag per *binary fingerprint* (not per pack version — see [coverage model](#coverage-model-one-release-many-pack-versions) below).
-3. Provide a small bootstrap script + documented CLI to overlay them onto an installed pack:
+3. Provide a small bootstrap script + documented CLI to overlay them onto an installed pack and Android SDK build-tools:
    ```
    ~/.dotnet/packs/Microsoft.Android.Sdk.Linux/<version>/tools/Linux/aapt2
    ~/.dotnet/packs/Microsoft.Android.Sdk.Linux/<version>/tools/libMono.Unix.so
    ~/.dotnet/packs/Microsoft.Android.Sdk.Linux/<version>/tools/libZipSharpNative-3-3.so
+   ~/.android-sdk/build-tools/<version>/zipalign
    ```
-4. Downstream consumers (e.g. [DotnetDeployer](https://github.com/SuperJMN/DotnetDeployer)) call the bootstrap before invoking `dotnet publish`.
+4. Downstream consumers (e.g. [DotnetDeployer](https://github.com/SuperJMN/DotnetDeployer)) call the bootstrap after Android SDK build-tools are installed and before invoking `dotnet publish`.
 
 ## Coverage model: one release, many pack versions
 
@@ -81,6 +83,7 @@ If/when [dotnet/android#11184](https://github.com/dotnet/android/issues/11184) i
 ## Component docs
 
 - [`docs/aapt2.md`](docs/aapt2.md)
+- [`docs/zipalign.md`](docs/zipalign.md)
 - [`docs/libMono.Unix.md`](docs/libMono.Unix.md)
 - [`docs/libZipSharpNative.md`](docs/libZipSharpNative.md)
 - [`docs/llvm-toolchain.md`](docs/llvm-toolchain.md) (deferred)

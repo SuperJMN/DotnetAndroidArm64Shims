@@ -71,9 +71,30 @@ jobs:
           path: out/linux-arm64/
           retention-days: 7
 
+  build-zipalign:
+    name: build-zipalign
+    runs-on: ubuntu-22.04-arm
+    env:
+      PACK_VERSION: ${{ github.event.inputs.pack_version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install host deps
+        run: |
+          sudo apt-get update -y
+          xargs -a shims/zipalign/apt-deps.txt sudo apt-get install -y --no-install-recommends
+      - name: build zipalign
+        run: bash shims/zipalign/build.sh
+      - name: verify zipalign
+        run: bash shims/zipalign/verify-basic.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shim-zipalign-${{ env.PACK_VERSION }}
+          path: out/linux-arm64/
+          retention-days: 7
+
   release:
     name: package + publish
-    needs: [build-so, build-aapt2]
+    needs: [build-so, build-aapt2, build-zipalign]
     runs-on: ubuntu-22.04-arm
     env:
       PACK_VERSION: ${{ github.event.inputs.pack_version || github.ref_name }}
