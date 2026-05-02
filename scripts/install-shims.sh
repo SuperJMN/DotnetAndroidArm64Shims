@@ -8,10 +8,15 @@
 #   install-shims.sh                       # detect installed pack(s), shim all
 #   install-shims.sh --version 36.1.53     # only this pack version
 #   install-shims.sh --pack-root /path     # override pack search root
+#   install-shims.sh --android-sdk-root /path
+#                                          # override Android SDK root for
+#                                          #   build-tools/zipalign overlay
 #   install-shims.sh --release-base URL    # override github release base URL
 #   install-shims.sh --manifest-url URL    # override compatibility.json URL
 #   install-shims.sh --manifest /path      # use a local compatibility.json (offline)
 #   install-shims.sh --skip-binutils       # skip the AOT toolchain overlay
+#   install-shims.sh --skip-build-tools    # skip Android SDK build-tools
+#                                          #   zipalign overlay
 #   install-shims.sh --llvm-major N        # pin host LLVM major (default: auto-detect)
 #   install-shims.sh --llvm-root /path     # use portable LLVM at /path/bin (skips
 #                                          #   /usr/lib/llvm-* probing). Also
@@ -24,6 +29,7 @@
 #   <pack>/tools/.x86_64-backup/
 #   <pack>/tools/Linux/.x86_64-backup/
 #   <pack>/tools/Linux/binutils/.x86_64-backup/
+#   <android-sdk>/build-tools/<version>/.x86_64-backup/
 #
 # Resolution: tries to download a shim release whose tag equals the pack
 # version. If none exists, consults compatibility.json (a sha256-anchored
@@ -45,10 +51,12 @@ set -euo pipefail
 RELEASE_BASE="${RELEASE_BASE:-https://github.com/SuperJMN/DotnetAndroidArm64Shims/releases/download}"
 MANIFEST_URL="${MANIFEST_URL:-https://raw.githubusercontent.com/SuperJMN/DotnetAndroidArm64Shims/main/compatibility.json}"
 PACK_ROOT="${PACK_ROOT:-$HOME/.dotnet/packs/Microsoft.Android.Sdk.Linux}"
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/.android-sdk}}"
 TARGET_VERSION=""
 DRY_RUN=0
 MANIFEST_FILE=""
 SKIP_BINUTILS=0
+SKIP_BUILD_TOOLS=0
 LLVM_MAJOR_OVERRIDE=""
 LLVM_ROOT="${LLVM_ROOT:-}"
 # Track final per-pack outcome so we exit with a sensible status code.
@@ -58,10 +66,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)        TARGET_VERSION="$2"; shift 2 ;;
         --pack-root)      PACK_ROOT="$2"; shift 2 ;;
+        --android-sdk-root) ANDROID_SDK_ROOT="$2"; shift 2 ;;
         --release-base)   RELEASE_BASE="$2"; shift 2 ;;
         --manifest-url)   MANIFEST_URL="$2"; shift 2 ;;
         --manifest)       MANIFEST_FILE="$2"; shift 2 ;;
         --skip-binutils|--no-binutils) SKIP_BINUTILS=1; shift ;;
+        --skip-build-tools|--skip-zipalign) SKIP_BUILD_TOOLS=1; shift ;;
         --llvm-major)     LLVM_MAJOR_OVERRIDE="$2"; shift 2 ;;
         --llvm-root)      LLVM_ROOT="$2"; shift 2 ;;
         --dry-run)        DRY_RUN=1; shift ;;
@@ -102,6 +112,9 @@ fi
 
 echo ">> host: $HOST_OS/$HOST_ARCH"
 echo ">> pack root: $PACK_ROOT"
+if [[ "$SKIP_BUILD_TOOLS" -eq 0 ]]; then
+    echo ">> Android SDK root: $ANDROID_SDK_ROOT"
+fi
 echo ">> versions to shim: ${VERSIONS[*]}"
 
 # --- compatibility manifest --------------------------------------------------
@@ -155,7 +168,7 @@ fetch_release() {
     local url="$RELEASE_BASE/$tag/shims-linux-arm64-$tag.tar.gz"
     local tarball="$workdir/shims.tar.gz"
 
-    echo ">>   downloading $url"
+    echo ">>   downloading $url" >&2
     if ! curl -fsSL --retry 3 -o "$tarball" "$url"; then
         return 10
     fi
@@ -455,6 +468,54 @@ overlay_binutils() {
     return $rc
 }
 
+# --- Android SDK build-tools overlay -----------------------------------------
+#
+# zipalign is not part of Microsoft.Android.Sdk.Linux. sdkmanager installs it
+# under <android-sdk>/build-tools/<version>/zipalign, so it must be patched
+# separately and only after build-tools are present on disk.
+
+overlay_build_tools_zipalign() {
+    local src="$1"
+    local build_tools_root="$ANDROID_SDK_ROOT/build-tools"
+
+    if [[ "$SKIP_BUILD_TOOLS" -eq 1 ]]; then
+        echo "   ! Android SDK build-tools overlay skipped (--skip-build-tools). Signed APK publishes may fail at zipalign."
+        return 0
+    fi
+
+    if [[ ! -f "$src" ]]; then
+        echo "   ! zipalign not present in this release tarball — skipping Android SDK build-tools overlay"
+        return 0
+    fi
+
+    if [[ ! -d "$build_tools_root" ]]; then
+        echo "   ! Android SDK build-tools root not found: $build_tools_root"
+        echo "     skipping zipalign overlay; re-run after sdkmanager installs build-tools"
+        return 0
+    fi
+
+    local versions=()
+    while IFS= read -r v; do
+        versions+=("$v")
+    done < <(find "$build_tools_root" -mindepth 2 -maxdepth 2 -type f -name zipalign -printf '%h\n' \
+        | xargs -r -n1 basename \
+        | sort -V)
+
+    if [[ ${#versions[@]} -eq 0 ]]; then
+        echo "   ! no build-tools/*/zipalign found under $build_tools_root"
+        echo "     skipping zipalign overlay; re-run after sdkmanager installs build-tools"
+        return 0
+    fi
+
+    local v
+    for v in "${versions[@]}"; do
+        echo "   > Android SDK build-tools $v"
+        overlay_one "$src" \
+                    "$build_tools_root/$v/zipalign" \
+                    "$build_tools_root/$v/.x86_64-backup"
+    done
+}
+
 for v in "${VERSIONS[@]}"; do
     pack="$PACK_ROOT/$v"
     echo ""
@@ -500,6 +561,8 @@ for v in "${VERSIONS[@]}"; do
             ANY_BINUTILS_FAILED=1
         fi
     fi
+
+    overlay_build_tools_zipalign "$workdir/zipalign"
 
     rm -rf "$workdir"
 done

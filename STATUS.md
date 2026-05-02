@@ -82,3 +82,11 @@ dotnet publish src/PokemonBattleEngine.Gui.Android -c Release -f net10.0-android
 > **Status update (2026-04-25):** the Pokémon end-to-end flow has been manually validated on the rpi4 worker after applying the Phase 6 shim recipe by hand (LLVM 19 + system binutils symlinked into `tools/Linux/binutils/bin/`). The `dotnet publish` produces both a signed APK (~85 MB) and AAB (~81 MB).
 >
 > **Status update (Phase 6 packaged):** the recipe now ships out of the box. `install-shims.sh` does the symlink overlay automatically, gated on a host-installed LLVM ≥ 15 (one apt one-liner — see `docs/llvm-toolchain.md`). The rpi4 worker no longer needs the manual fix; reinstalling the shim package preserves the AOT path. v1 done-ness reached.
+
+## Phase 7 — Android SDK build-tools zipalign shim (done) ✅
+
+Promoted after [issue #2](https://github.com/SuperJMN/DotnetAndroidArm64Shims/issues/2): DotnetDeployer successfully installed the .NET pack shims on the Raspberry Pi 4 worker, but signed APK publish still failed because `sdkmanager "build-tools;36.0.0"` installed an x86_64 `~/.android-sdk/build-tools/36.0.0/zipalign`.
+
+- [x] **Ship a native linux-arm64 `zipalign` shim** in the release tarball. Strategy: consume the checksum-pinned static aarch64 binary from `lzhiyong/android-sdk-tools` `35.0.2`, which is built from AOSP build-tools sources and runs on Linux/aarch64.
+- [x] **Extend `scripts/install-shims.sh`** to overlay every installed `<android-sdk>/build-tools/*/zipalign`, using `$ANDROID_SDK_ROOT`, `$ANDROID_HOME`, or `~/.android-sdk`, with `--android-sdk-root` and `--skip-build-tools` overrides. Originals are backed up to `<build-tools-version>/.x86_64-backup/zipalign`.
+- [x] **CI smoke coverage**: fake Android SDK build-tools tree, install overlay, assert backup/idempotency, and run `zipalign -f -p 4` plus `zipalign -c -p 4` against the overlaid binary.

@@ -101,9 +101,28 @@ jobs:
           path: out/linux-arm64/
           retention-days: 14
 
+  build-zipalign:
+    name: build-zipalign
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: install host deps
+        run: |
+          sudo apt-get update -y
+          xargs -a shims/zipalign/apt-deps.txt sudo apt-get install -y --no-install-recommends
+      - name: build zipalign
+        run: bash shims/zipalign/build.sh
+      - name: verify zipalign
+        run: bash shims/zipalign/verify-basic.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shim-zipalign-${{ env.PACK_VERSION }}
+          path: out/linux-arm64/
+          retention-days: 14
+
   install-shims-smoketest:
     name: install-shims smoketest
-    needs: [build-so, build-aapt2]
+    needs: [build-so, build-aapt2, build-zipalign]
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -124,7 +143,7 @@ jobs:
           test -x /usr/lib/llvm-19/bin/llc
           test -x /usr/lib/llvm-19/bin/ld.lld
       - name: shellcheck
-        run: shellcheck scripts/install-shims.sh scripts/package-release.sh scripts/extract-reference-symbols.sh
+        run: shellcheck scripts/install-shims.sh scripts/package-release.sh scripts/extract-reference-symbols.sh shims/zipalign/build.sh shims/zipalign/verify-basic.sh
       - name: collect built shims
         uses: actions/download-artifact@v4
         with:
@@ -137,11 +156,15 @@ jobs:
         run: |
           set -euo pipefail
           fake="$RUNNER_TEMP/fake-dotnet"
+          fake_sdk="$RUNNER_TEMP/fake-android-sdk"
           pack="$fake/packs/Microsoft.Android.Sdk.Linux/${PACK_VERSION}"
           mkdir -p "$pack/tools/Linux/binutils/bin"
+          mkdir -p "$fake_sdk/build-tools/36.0.0"
           # touch placeholder x86_64 binaries so backup logic exercises
           : > "$pack/tools/libMono.Unix.so"
           : > "$pack/tools/libZipSharpNative-3-3.so"
+          printf 'x86_64 placeholder for zipalign\n' > "$fake_sdk/build-tools/36.0.0/zipalign"
+          chmod +x "$fake_sdk/build-tools/36.0.0/zipalign"
           # binutils/bin placeholders — non-empty, executable, so backup logic
           # treats them as real x86_64 originals.
           for b in as ld llc llvm-mc llvm-objcopy llvm-strip; do
@@ -154,15 +177,18 @@ jobs:
           (cd "$RUNNER_TEMP/release" && python3 -m http.server 8765 >/tmp/serve.log 2>&1 &)
           sleep 1
           PACK_ROOT="$fake/packs/Microsoft.Android.Sdk.Linux" \
+            ANDROID_SDK_ROOT="$fake_sdk" \
             RELEASE_BASE="http://127.0.0.1:8765" \
             bash scripts/install-shims.sh --version "${PACK_VERSION}" --llvm-major 19
           # re-run: must be a no-op for both .so/aapt2 AND binutils symlinks
           PACK_ROOT="$fake/packs/Microsoft.Android.Sdk.Linux" \
+            ANDROID_SDK_ROOT="$fake_sdk" \
             RELEASE_BASE="http://127.0.0.1:8765" \
             bash scripts/install-shims.sh --version "${PACK_VERSION}" --llvm-major 19 \
             | tee /tmp/second.log
           grep -q "already shimmed" /tmp/second.log
           grep -q "already symlinked" /tmp/second.log
+          grep -q "zipalign already shimmed" /tmp/second.log
       - name: assert binutils overlay
         run: |
           set -euo pipefail
@@ -186,6 +212,15 @@ jobs:
             "$bindir/$bin" --version >/dev/null
             echo "OK: $bin -> ${want[$bin]} (backed up, --version runs)"
           done
+      - name: assert Android SDK build-tools zipalign overlay
+        run: |
+          set -euo pipefail
+          zipalign="$RUNNER_TEMP/fake-android-sdk/build-tools/36.0.0/zipalign"
+          backup="$RUNNER_TEMP/fake-android-sdk/build-tools/36.0.0/.x86_64-backup/zipalign"
+          test -x "$zipalign"
+          test -f "$backup"
+          file "$zipalign" | grep -q 'ARM aarch64'
+          ZIPALIGN="$zipalign" bash shims/zipalign/verify-basic.sh
       - name: --skip-binutils still works on a host with LLVM
         run: |
           set -euo pipefail

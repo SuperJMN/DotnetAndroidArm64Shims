@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # package-release.sh
 #
-# Assembles the three shim binaries into a release tarball matching the layout
+# Assembles the shim binaries into a release tarball matching the layout
 # documented in STATUS.md and emits SHA256SUMS alongside it.
 #
 #   dist/shims-linux-arm64-<PACK_VERSION>.tar.gz
 #     ./aapt2
+#     ./zipalign
 #     ./libMono.Unix.so
 #     ./libZipSharpNative-<suffix>.so
 #     ./SHA256SUMS
@@ -48,6 +49,15 @@ if [[ -f "$IN_DIR/aapt2" ]]; then
     echo ">> including aapt2"
 else
     echo ">> aapt2 not present in $IN_DIR — packaging without it (v1 partial)"
+fi
+
+if [[ -f "$IN_DIR/zipalign" ]]; then
+    cp "$IN_DIR/zipalign" "$STAGE/"
+    chmod +x "$STAGE/zipalign"
+    CONTENTS+=(zipalign)
+    echo ">> including zipalign"
+else
+    echo ">> zipalign not present in $IN_DIR — packaging without it"
 fi
 
 (cd "$STAGE" && sha256sum "${CONTENTS[@]}" > SHA256SUMS)
