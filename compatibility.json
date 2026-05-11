@@ -38,7 +38,17 @@
     "36.1.43": "36.1.53",
     "36.1.99-preview.1.120": "36.1.53",
     "36.1.99-preview.2.154": "36.1.53",
-    "36.99.0-preview.3.10": "36.1.53"
+    "36.99.0-preview.3.10": "36.1.53",
+    "35.0.0-rc.2.152": "35.0.105",
+    "35.99.0-preview.1.140": "35.0.105",
+    "35.99.0-preview.2.205": "35.0.105",
+    "36.0.0-preview.3.22": "35.0.105",
+    "36.0.0-preview.4.80": "35.0.105",
+    "36.0.0-preview.5.116": "35.0.105",
+    "36.0.0-preview.6.169": "35.0.105",
+    "36.0.0-preview.7.229": "36.1.53",
+    "36.0.0-rc.1.285": "36.1.53",
+    "36.0.0-rc.2.332": "36.1.53"
   },
   "anchors": {
     "$comment": "sha256 of the upstream x86_64 binaries that each shim release replaces. The watcher uses these to detect drift.",
@@ -86,7 +96,13 @@
       "no acceptable LLVM is found on the host. {codename} is substituted at",
       "runtime from `lsb_release -cs`."
     ],
-    "preferred_llvm_majors": [19, 18, 17, 16, 15],
+    "preferred_llvm_majors": [
+      19,
+      18,
+      17,
+      16,
+      15
+    ],
     "host_install_recipe": [
       "wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/apt.llvm.org.gpg",
       "echo 'deb http://apt.llvm.org/{codename}/ llvm-toolchain-{codename}-19 main' | sudo tee /etc/apt/sources.list.d/llvm-19.list",
@@ -95,12 +111,12 @@
     ],
     "mapping": {
       "$comment": "Pack-relative path → host-path template. {llvm} is replaced with the detected LLVM major.",
-      "tools/Linux/binutils/bin/as":           "/usr/bin/as",
-      "tools/Linux/binutils/bin/ld":           "/usr/lib/llvm-{llvm}/bin/ld.lld",
-      "tools/Linux/binutils/bin/llc":          "/usr/lib/llvm-{llvm}/bin/llc",
-      "tools/Linux/binutils/bin/llvm-mc":      "/usr/lib/llvm-{llvm}/bin/llvm-mc",
+      "tools/Linux/binutils/bin/as": "/usr/bin/as",
+      "tools/Linux/binutils/bin/ld": "/usr/lib/llvm-{llvm}/bin/ld.lld",
+      "tools/Linux/binutils/bin/llc": "/usr/lib/llvm-{llvm}/bin/llc",
+      "tools/Linux/binutils/bin/llvm-mc": "/usr/lib/llvm-{llvm}/bin/llvm-mc",
       "tools/Linux/binutils/bin/llvm-objcopy": "/usr/lib/llvm-{llvm}/bin/llvm-objcopy",
-      "tools/Linux/binutils/bin/llvm-strip":   "/usr/lib/llvm-{llvm}/bin/llvm-strip"
+      "tools/Linux/binutils/bin/llvm-strip": "/usr/lib/llvm-{llvm}/bin/llvm-strip"
     }
   }
 }
